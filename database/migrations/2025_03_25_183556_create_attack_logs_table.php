@@ -9,11 +9,13 @@ return new class extends Migration {
     {
         Schema::connection('honeypot')->create('attack_logs', function (Blueprint $table) {
             $table->id();
-            $table->string('ip_address');
-            $table->text('user_agent');
-            $table->text('url');
-            $table->json('payload');
-            $table->string('type');
+            $table->string('ip_address')->nullable();
+            $table->string('url')->nullable();
+            $table->string('type')->nullable();
+            $table->text('payload')->nullable();
+            $table->string('user_agent')->nullable();
+            $table->string('threat_level')->default('medium');
+            $table->string('action_taken')->default('logged');
             $table->timestamps();
         });
     }

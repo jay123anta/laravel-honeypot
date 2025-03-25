@@ -10,24 +10,29 @@ use Security\Honeypot\Models\AttackLog;
 
 class HoneypotService
 {
-    public function logAndBlock(Request $request, string $threatType): void
+    /**
+     * Log and optionally block malicious request
+     */
+    public function logAndBlock(Request $request, string $threatType, string $level = 'high'): void
     {
-        $ip = $request->ip();
-        $url = $request->fullUrl();
+        $ip        = $request->ip();
+        $url       = $request->fullUrl();
         $userAgent = $request->userAgent();
-        $payload = json_encode($request->all());
+        $payload   = json_encode($request->all());
 
         $logData = [
-            'ip_address' => $ip,
-            'url' => $url,
-            'type' => $threatType,
-            'user_agent' => $userAgent,
-            'payload' => $payload,
+            'ip_address'    => $ip,
+            'url'           => $url,
+            'type'          => $threatType,
+            'user_agent'    => $userAgent,
+            'payload'       => strlen($payload) > 2000 ? substr($payload, 0, 2000) . '...' : $payload,
+            'threat_level'  => $level,
+            'action_taken'  => 'blocked',
         ];
 
         // 🔍 Log to file if enabled
         if (config('honeypot.storage.log_to_file', true)) {
-            Log::warning('🛡️ Honeypot Threat Detected', $logData);
+            Log::warning('🛡️ Honeypot Threat Blocked', $logData);
         }
 
         // 💾 Log to database if enabled
@@ -41,12 +46,38 @@ class HoneypotService
             Cache::put("banned_ip_{$ip}", true, now()->addMinutes($banDuration));
         }
 
-        // 📢 Send Alerts
+        // 📢 Send alerts
         $this->sendSlackAlert($logData);
         $this->sendSmsAlert($ip, $threatType);
     }
 
-    // 📢 Slack Notification
+    /**
+     * Log threat without blocking
+     */
+    public function logThreat(array $data): void
+    {
+        // Log to file if enabled
+        if (config('honeypot.storage.log_to_file', true)) {
+            Log::info('📘 Honeypot Passive Log', $data);
+        }
+
+        // Log to database if enabled
+        if (config('honeypot.storage.log_to_database', true)) {
+            AttackLog::create([
+                'ip_address'    => $data['ip_address'] ?? null,
+                'url'           => $data['url'] ?? null,
+                'user_agent'    => $data['user_agent'] ?? null,
+                'type'          => $data['type'] ?? 'Unknown',
+                'payload'       => $data['payload'] ?? null,
+                'threat_level'  => $data['threat_level'] ?? 'medium',
+                'action_taken'  => $data['action_taken'] ?? 'logged',
+            ]);
+        }
+    }
+
+    /**
+     * 🔔 Slack Notification
+     */
     protected function sendSlackAlert(array $logData): void
     {
         if (!config('honeypot.alerts.enable_slack', false)) {
@@ -68,7 +99,9 @@ class HoneypotService
         }
     }
 
-    // 📲 SMS Notification
+    /**
+     * 📲 SMS Notification
+     */
     protected function sendSmsAlert(string $ip, string $threatType): void
     {
         if (!config('honeypot.alerts.enable_sms', false)) {
@@ -76,7 +109,7 @@ class HoneypotService
         }
 
         $gatewayUrl = config('honeypot.alerts.sms_gateway_url');
-        $toNumber = config('honeypot.alerts.sms_to_number');
+        $toNumber   = config('honeypot.alerts.sms_to_number');
 
         if (!$gatewayUrl || !$toNumber) {
             Log::warning('🚫 SMS gateway URL or recipient number not configured.');
@@ -85,7 +118,7 @@ class HoneypotService
 
         try {
             Http::get($gatewayUrl, [
-                'to' => $toNumber,
+                'to'      => $toNumber,
                 'message' => "⚠️ Honeypot Alert\nIP: $ip\nThreat: $threatType",
             ]);
         } catch (\Exception $e) {

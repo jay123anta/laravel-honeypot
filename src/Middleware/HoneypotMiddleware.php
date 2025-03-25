@@ -169,7 +169,8 @@ class HoneypotMiddleware
             '/\${.*?}/i' => 'Template Injection Detected',
             '/gopher:\/\//i' => 'SSRF Detected',
             '/file:\/\/etc\/passwd/i' => 'SSRF/LFI Detected',
-            '/(\.\.\/|\.\.\\)/i' => 'Directory Traversal Detected',
+            '/(\.\.\/|\.\.\\\\)/i' => 'Directory Traversal Detected',
+
         ];
     }
 
