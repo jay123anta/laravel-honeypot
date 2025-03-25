@@ -1,0 +1,1 @@
+<?php namespace Security\Honeypot\Models; use Illuminate\Database\Eloquent\Model; class AttackLog extends Model { protected $connection = 'honeypot'; protected $fillable = ['ip_address','user_agent','url','payload','type']; }

@@ -1,0 +1,4 @@
+* text=auto
+*.php linguist-language=PHP
+*.js linguist-language=JavaScript
+*.css linguist-language=CSS

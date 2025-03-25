@@ -1,0 +1,1 @@
+<?php namespace Security\Honeypot\Commands; use Illuminate\Console\Command; class BanIpCommand extends Command { protected $signature = 'honeypot:ban-ip {ip}'; protected $description = 'Ban IP via iptables'; public function handle() { $ip = $this->argument('ip'); exec("iptables -A INPUT -s {$ip} -j DROP"); $this->info("IP {$ip} banned."); } }

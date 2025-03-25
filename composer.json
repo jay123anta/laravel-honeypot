@@ -1,0 +1,35 @@
+{
+  "name": "security/honeypot",
+  "description": "Laravel Honeypot Security Middleware: Protect your app with threat detection, rate limiting, AI threat analysis, and real-time alerts.",
+  "type": "library",
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "Jayanta Kr. Nath",
+      "email": "jay123anta@gmail.com"
+    }
+  ],
+  "autoload": {
+    "psr-4": {
+      "Security\\Honeypot\\": "src/"
+    }
+  },
+  "extra": {
+    "laravel": {
+      "providers": [
+        "Security\\Honeypot\\HoneypotServiceProvider"
+      ]
+    }
+  },
+  "require": {
+    "php": "^8.0",
+    "illuminate/support": "^9.0|^10.0|^11.0",
+    "guzzlehttp/guzzle": "^7.0"
+  },
+  "minimum-stability": "stable",
+  "prefer-stable": true,
+  "support": {
+    "issues": "https://github.com/your-org/honeypot/issues",
+    "source": "https://github.com/your-org/honeypot"
+  }
+}
