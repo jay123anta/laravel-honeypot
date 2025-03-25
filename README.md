@@ -21,7 +21,7 @@
 ## 📦 Installation
 
 ```bash
-composer require security/honeypot
+composer require jay123anta/honeypot
 php artisan vendor:publish --tag=honeypot-security
 php artisan migrate
 
