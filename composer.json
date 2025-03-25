@@ -1,5 +1,5 @@
 {
-  "name": "security/honeypot",
+  "name": "jay123anta/honeypot",
   "description": "Laravel Honeypot Security Middleware: Protect your app with threat detection, rate limiting, AI threat analysis, and real-time alerts.",
   "type": "library",
   "license": "MIT",
