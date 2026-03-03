@@ -1,0 +1,70 @@
+{
+    "name": "jayanta/laravel-threat-detection",
+    "description": "Real-time threat detection and security logging for Laravel applications. Detects SQL injection, XSS, DDoS, scanner bots, and more.",
+    "keywords": [
+        "laravel",
+        "security",
+        "threat-detection",
+        "honeypot",
+        "firewall",
+        "xss",
+        "sql-injection",
+        "ddos",
+        "waf"
+    ],
+    "homepage": "https://github.com/jay123anta/laravel-honeypot",
+    "license": "MIT",
+    "type": "library",
+    "authors": [
+        {
+            "name": "Jay Anta",
+            "email": "jay123anta@gmail.com",
+            "homepage": "https://github.com/jay123anta"
+        }
+    ],
+    "require": {
+        "php": "^8.1",
+        "illuminate/support": "^10.0|^11.0|^12.0",
+        "illuminate/http": "^10.0|^11.0|^12.0",
+        "illuminate/routing": "^10.0|^11.0|^12.0",
+        "illuminate/database": "^10.0|^11.0|^12.0",
+        "illuminate/cache": "^10.0|^11.0|^12.0",
+        "illuminate/notifications": "^10.0|^11.0|^12.0"
+    },
+    "require-dev": {
+        "orchestra/testbench": "^8.0|^9.0|^10.0",
+        "phpunit/phpunit": "^10.0|^11.0"
+    },
+    "suggest": {
+        "laravel/slack-notification-channel": "Required for Slack notifications on Laravel 11+ (^3.0)",
+        "laravel/sanctum": "Recommended for API route authentication (^3.0|^4.0)"
+    },
+    "autoload": {
+        "psr-4": {
+            "JayAnta\\ThreatDetection\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "JayAnta\\ThreatDetection\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "JayAnta\\ThreatDetection\\ThreatDetectionServiceProvider"
+            ],
+            "aliases": {
+                "ThreatDetection": "JayAnta\\ThreatDetection\\Facades\\ThreatDetection"
+            }
+        }
+    },
+    "scripts": {
+        "test": "vendor/bin/phpunit"
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
