@@ -11,6 +11,7 @@ class ApiEndpointTest extends TestCase
     {
         parent::setUp();
         $this->createThreatLogsTable();
+        $this->createExclusionRulesTable();
     }
 
     private function seedThreats(int $count = 5): void
@@ -139,6 +140,82 @@ class ApiEndpointTest extends TestCase
     public function show_endpoint_returns_404_for_missing_threat(): void
     {
         $response = $this->getJson('/api/threat-detection/threats/999');
+
+        $response->assertStatus(404);
+    }
+
+    /** @test */
+    public function mark_false_positive_creates_exclusion_rule(): void
+    {
+        $this->seedThreats(1);
+
+        $response = $this->postJson('/api/threat-detection/threats/1/false-positive', [
+            'reason' => 'Not a real threat',
+        ]);
+
+        $response->assertStatus(200)
+            ->assertJson(['success' => true]);
+
+        $this->assertDatabaseHas('threat_logs', [
+            'id' => 1,
+            'is_false_positive' => true,
+        ]);
+
+        $this->assertDatabaseHas('threat_exclusion_rules', [
+            'created_from_threat_id' => 1,
+            'reason' => 'Not a real threat',
+            'is_active' => true,
+        ]);
+    }
+
+    /** @test */
+    public function mark_false_positive_returns_404_for_missing_threat(): void
+    {
+        $response = $this->postJson('/api/threat-detection/threats/999/false-positive');
+
+        $response->assertStatus(404);
+    }
+
+    /** @test */
+    public function exclusion_rules_endpoint_lists_rules(): void
+    {
+        DB::table('threat_exclusion_rules')->insert([
+            'pattern_label' => 'XSS Script Tag',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $response = $this->getJson('/api/threat-detection/exclusion-rules');
+
+        $response->assertStatus(200)
+            ->assertJson(['success' => true]);
+
+        $this->assertCount(1, $response->json('data'));
+    }
+
+    /** @test */
+    public function delete_exclusion_rule_works(): void
+    {
+        $id = DB::table('threat_exclusion_rules')->insertGetId([
+            'pattern_label' => 'XSS Script Tag',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $response = $this->deleteJson("/api/threat-detection/exclusion-rules/{$id}");
+
+        $response->assertStatus(200)
+            ->assertJson(['success' => true]);
+
+        $this->assertDatabaseMissing('threat_exclusion_rules', ['id' => $id]);
+    }
+
+    /** @test */
+    public function delete_exclusion_rule_returns_404_for_missing(): void
+    {
+        $response = $this->deleteJson('/api/threat-detection/exclusion-rules/999');
 
         $response->assertStatus(404);
     }
