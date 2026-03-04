@@ -35,24 +35,24 @@ The package ships with a built-in dark-mode dashboard (Alpine.js + Tailwind CDN 
 <!-- Take a screenshot at /threat-detection when you have some threat data -->
 
 ```
-+------------------------------------------------------------------+
-|  Threat Detection Dashboard                                       |
-+------------------------------------------------------------------+
-|  Total: 847  |  High: 23  |  Med: 156  |  Low: 668  |  IPs: 94  |
-+------------------------------------------------------------------+
-|  [████████ Timeline Chart - 7 Day Stacked Bar ████████]          |
-+------------------------------------------------------------------+
-|  Search: [___________]  Level: [All ▼]                           |
-|  Time         IP              Type              Level    URL      |
-|  Mar 2 14:02  185.220.101.4   SQL Injection     HIGH    /api/... |
-|  Mar 2 13:58  45.33.32.156    XSS Script Tag    HIGH    /search  |
-|  Mar 2 13:45  192.168.1.10    Scanner: Nikto    MEDIUM  /admin   |
-+------------------------------------------------------------------+
-|  Top IPs              |  Threats by Country                       |
-|  185.220.101.4  [23]  |  US ████████████ 234                     |
-|  45.33.32.156   [18]  |  CN ████████ 156                         |
-|  103.152.220.1  [12]  |  RU ██████ 98                            |
-+------------------------------------------------------------------+
++-------------------------------------------------------------------------+
+|  Threat Detection Dashboard                                              |
++-------------------------------------------------------------------------+
+|  Total: 847  |  High: 23  |  Med: 156  |  Low: 668  |  IPs: 94         |
++-------------------------------------------------------------------------+
+|  [████████ Timeline Chart - 7 Day Stacked Bar ████████]                 |
++-------------------------------------------------------------------------+
+|  Search: [___________]  Level: [All ▼]                                  |
+|  Time         IP             Type            Level  Confidence  Actions  |
+|  Mar 2 14:02  185.220.101.4  SQL Injection   HIGH   80%         [FP]    |
+|  Mar 2 13:58  45.33.32.156   XSS Script Tag  HIGH   65%         [FP]    |
+|  Mar 2 13:45  192.168.1.10   Scanner: Nikto  MED    35%         [FP]    |
++-------------------------------------------------------------------------+
+|  Top IPs              |  Threats by Country                              |
+|  185.220.101.4  [23]  |  US ████████████ 234                            |
+|  45.33.32.156   [18]  |  CN ████████ 156                                |
+|  103.152.220.1  [12]  |  RU ██████ 98                                   |
++-------------------------------------------------------------------------+
 ```
 
 > Enable with `THREAT_DETECTION_DASHBOARD=true` in your `.env`
@@ -102,11 +102,16 @@ protected $middlewareGroups = [
 - **Scanner Detection** — SQLMap, Nikto, Nmap, Burp Suite, Acunetix, WPScan, Dirbuster
 - **Bot Detection** — Suspicious user agents, automated scripts, headless browsers
 - **DDoS Monitoring** — Rate-based threshold detection with configurable windows
+- **Confidence Scoring** — Each threat gets a 0-100 confidence score based on pattern count, context, and signals
+- **False Positive Reporting** — Mark threats as false positives from the dashboard; auto-creates exclusion rules
+- **Tunable Sensitivity** — Three detection modes: `strict`, `balanced` (default), and `relaxed`
+- **Context-Aware Detection** — Patterns found in query strings score higher than those in POST body
+- **Content Path Suppression** — Whitelist CMS/blog paths to suppress low/medium alerts from rich content
 - **PII Detection** — Sensitive data exposure patterns (configurable per region)
 - **Geo-Enrichment** — Country, city, ISP, cloud provider identification via free API
 - **Slack Alerts** — Real-time notifications for high-severity threats
 - **Built-in Dashboard** — Dark-mode Blade dashboard (Alpine.js + Tailwind CDN)
-- **12 API Endpoints** — Full REST API for custom Vue/React/mobile dashboards
+- **15 API Endpoints** — Full REST API for custom Vue/React/mobile dashboards
 - **CSV Export** — One-click threat log export
 - **Correlation Analysis** — Detect coordinated attacks and attack campaigns
 - **Database Agnostic** — MySQL, PostgreSQL, SQLite, SQL Server
@@ -121,6 +126,9 @@ Add to your `.env` file:
 ```env
 # Core
 THREAT_DETECTION_ENABLED=true
+
+# Detection sensitivity: strict, balanced (default), relaxed
+THREAT_DETECTION_MODE=balanced
 
 # Whitelist IPs (comma-separated, supports CIDR)
 THREAT_DETECTION_WHITELISTED_IPS=127.0.0.1,10.0.0.0/8
@@ -159,7 +167,7 @@ By default, detection runs in `production`, `staging`, and `local`. Change in yo
 
 ## API Endpoints
 
-The package provides 12 authenticated REST endpoints for building custom dashboards.
+The package provides 15 authenticated REST endpoints for building custom dashboards.
 
 > **Security:** API routes use `auth:sanctum` middleware by default. Update `api.middleware` in your config to change.
 
@@ -167,6 +175,7 @@ The package provides 12 authenticated REST endpoints for building custom dashboa
 |--------|----------|-------------|
 | GET | `/api/threat-detection/threats` | List threats (paginated, filterable) |
 | GET | `/api/threat-detection/threats/{id}` | Single threat details |
+| POST | `/api/threat-detection/threats/{id}/false-positive` | Mark threat as false positive |
 | GET | `/api/threat-detection/stats` | Overall statistics |
 | GET | `/api/threat-detection/summary` | Detailed breakdown by type, level, IP |
 | GET | `/api/threat-detection/live-count` | Threats in last hour |
@@ -177,6 +186,8 @@ The package provides 12 authenticated REST endpoints for building custom dashboa
 | GET | `/api/threat-detection/ip-stats?ip=x.x.x.x` | Stats for specific IP |
 | GET | `/api/threat-detection/correlation` | Correlation analysis |
 | GET | `/api/threat-detection/export` | Export to CSV |
+| GET | `/api/threat-detection/exclusion-rules` | List exclusion rules |
+| DELETE | `/api/threat-detection/exclusion-rules/{id}` | Delete an exclusion rule |
 
 ### Query Parameters for `/threats`
 
@@ -252,6 +263,67 @@ Configure threat level mappings:
 
 ---
 
+## Reducing False Positives
+
+The package includes several features to minimize false positives without missing real threats.
+
+### Detection Modes
+
+Set `THREAT_DETECTION_MODE` in your `.env`:
+
+| Mode | Behavior |
+|------|----------|
+| `strict` | All patterns active, lowest thresholds. Catches everything but may flag legitimate traffic. |
+| `balanced` | Default. Confidence scoring active, standard thresholds. Good for most apps. |
+| `relaxed` | Only high-severity patterns trigger. Best for content-heavy sites with frequent false positives. |
+
+### Content Path Suppression
+
+If you have CMS editors, blog post forms, or comment sections where users submit rich content, add those paths to suppress low/medium alerts:
+
+```php
+// config/threat-detection.php
+'content_paths' => [
+    'admin/posts/*',
+    'admin/pages/*',
+    'blog/*/edit',
+    'comments',
+],
+```
+
+On these paths, only high-severity threats (real attacks) will be logged.
+
+### False Positive Reporting
+
+Click the **FP** button on any threat in the dashboard to mark it as a false positive. This:
+1. Flags the threat as `is_false_positive = true`
+2. Auto-creates an exclusion rule so similar threats are suppressed going forward
+
+Manage exclusion rules via API:
+```bash
+# List rules
+GET /api/threat-detection/exclusion-rules
+
+# Delete a rule
+DELETE /api/threat-detection/exclusion-rules/{id}
+```
+
+### Confidence Scoring
+
+Every threat receives a confidence score (0-100) based on:
+- Number of pattern matches in the same request
+- Severity of the matched pattern
+- Where the pattern was found (query string > headers > body)
+- Whether the user-agent matches a known attack tool
+- Current detection mode
+
+Threats below the confidence threshold are not logged:
+- `strict`: threshold 0 (log everything)
+- `balanced`: threshold 10
+- `relaxed`: threshold 40
+
+---
+
 ## Building Custom Frontends
 
 ### Vue.js
@@ -314,7 +386,7 @@ Uses the free [ip-api.com](http://ip-api.com) service (HTTP, rate-limited to 45 
 composer test
 ```
 
-The package includes 19 tests covering service detection, middleware behavior, and API endpoints.
+The package includes 46 tests covering service detection, middleware behavior, API endpoints, confidence scoring, and exclusion rules.
 
 ---
 
