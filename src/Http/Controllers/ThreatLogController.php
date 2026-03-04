@@ -24,8 +24,15 @@ class ThreatLogController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
+        $request->validate([
+            'per_page' => 'sometimes|integer|min:1|max:100',
+            'level' => 'sometimes|in:high,medium,low',
+            'date_from' => 'sometimes|date',
+            'date_to' => 'sometimes|date',
+        ]);
+
         $query = DB::table($this->table)
-            ->select('id', 'ip_address', 'url', 'type', 'threat_level', 'confidence_score', 'confidence_label', 'is_false_positive', 'action_taken', 'country_code', 'country_name', 'cloud_provider', 'is_foreign', 'created_at');
+            ->select('id', 'ip_address', 'url', 'type', 'threat_level', 'confidence_score', 'confidence_label', 'is_false_positive', 'action_taken', 'country_code', 'country_name', 'cloud_provider', 'is_cloud_ip', 'is_foreign', 'created_at');
 
         // Search keyword
         if ($request->has('keyword')) {
@@ -55,6 +62,9 @@ class ThreatLogController extends Controller
         }
         if ($request->filled('cloud_provider')) {
             $query->where('cloud_provider', $request->cloud_provider);
+        }
+        if ($request->has('is_false_positive')) {
+            $query->where('is_false_positive', $request->boolean('is_false_positive'));
         }
         if ($request->filled('date_from')) {
             $query->where('created_at', '>=', $request->date_from);
@@ -274,7 +284,7 @@ class ThreatLogController extends Controller
             $query->where('threat_level', $request->level);
         }
 
-        $logs = $query->orderByDesc('created_at')->get();
+        $logs = $query->orderByDesc('created_at')->limit(10000)->get();
 
         $csvHeader = ['ID', 'Time', 'IP Address', 'URL', 'Type', 'Level', 'Confidence', 'False Positive', 'Action', 'Country', 'Cloud Provider'];
         $csvData = $logs->map(function ($log) {
@@ -352,6 +362,7 @@ class ThreatLogController extends Controller
      */
     public function topIps(Request $request): JsonResponse
     {
+        $request->validate(['limit' => 'sometimes|integer|min:1|max:100']);
         $limit = $request->get('limit', 20);
 
         $data = DB::table($this->table)
@@ -372,6 +383,7 @@ class ThreatLogController extends Controller
      */
     public function timeline(Request $request): JsonResponse
     {
+        $request->validate(['days' => 'sometimes|integer|min:1|max:365']);
         $days = $request->get('days', 7);
 
         $data = DB::table($this->table)

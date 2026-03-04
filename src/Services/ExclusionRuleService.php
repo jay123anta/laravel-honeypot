@@ -71,7 +71,6 @@ class ExclusionRuleService
         $id = DB::table('threat_exclusion_rules')->insertGetId([
             'pattern_label' => $label,
             'path_pattern' => $path ?: null,
-            'source_context' => null,
             'created_from_threat_id' => $threatId,
             'created_by_user_id' => $userId,
             'reason' => $reason,
