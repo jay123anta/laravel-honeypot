@@ -15,13 +15,40 @@ class EnrichThreatLogsCommand extends Command
 
     protected $description = 'Enrich threat logs with geo-location and cloud provider data';
 
-    protected array $cloudProviders = [
-        'AWS' => ['13.', '3.', '35.154.', '65.1.', '65.2.', '52.', '54.'],
-        'DigitalOcean' => ['139.59.', '167.99.', '167.172.', '188.166.', '157.230.', '137.184.', '159.65.'],
-        'Azure' => ['20.', '40.'],
-        'GCP' => ['34.', '35.'],
-        'Linode' => ['172.104.', '139.162.'],
-        'Vultr' => ['45.32.', '45.63.', '45.76.', '45.77.'],
+    /**
+     * ISP/org keywords that indicate cloud hosting providers.
+     * Matched against the 'isp' and 'org' fields from ip-api.com.
+     */
+    protected array $cloudIspKeywords = [
+        'Amazon'          => 'AWS',
+        'AWS'             => 'AWS',
+        'EC2'             => 'AWS',
+        'Microsoft'       => 'Azure',
+        'Azure'           => 'Azure',
+        'Google Cloud'    => 'GCP',
+        'Google LLC'      => 'GCP',
+        'DigitalOcean'    => 'DigitalOcean',
+        'Linode'          => 'Linode',
+        'Akamai'          => 'Linode',
+        'Vultr'           => 'Vultr',
+        'Choopa'          => 'Vultr',
+        'OVH'             => 'OVH',
+        'Hetzner'         => 'Hetzner',
+        'Cloudflare'      => 'Cloudflare',
+        'Oracle Cloud'    => 'Oracle',
+        'Alibaba'         => 'Alibaba',
+        'Tencent Cloud'   => 'Tencent',
+    ];
+
+    /**
+     * Fallback IP prefix detection — only well-known, unambiguous ranges.
+     * Used when the API doesn't return ISP data.
+     */
+    protected array $cloudPrefixes = [
+        'AWS'          => ['18.', '54.'],
+        'DigitalOcean' => ['139.59.', '167.99.', '167.172.', '157.230.', '159.65.', '134.209.', '164.90.'],
+        'Linode'       => ['139.162.', '172.104.', '172.105.', '45.33.', '45.56.', '45.79.'],
+        'Vultr'        => ['45.32.', '45.63.', '45.76.', '45.77.', '149.28.', '108.61.', '95.179.'],
     ];
 
     public function handle(): int
@@ -73,7 +100,7 @@ class EnrichThreatLogsCommand extends Command
 
         return Cache::remember($cacheKey, now()->addDays(7), function () use ($ip) {
             $geo = $this->fetchGeoData($ip);
-            $cloudProvider = $this->detectCloudProvider($ip);
+            $cloudProvider = $this->detectCloudProvider($ip, $geo['isp'] ?? null, $geo['org'] ?? null);
 
             $homeCountry = config('threat-detection.home_country', 'IN');
 
@@ -92,7 +119,7 @@ class EnrichThreatLogsCommand extends Command
     protected function fetchGeoData(string $ip): array
     {
         try {
-            $response = Http::timeout(3)->get("http://ip-api.com/json/{$ip}");
+            $response = Http::timeout(3)->get("http://ip-api.com/json/{$ip}?fields=countryCode,country,city,isp,org");
 
             if ($response->successful()) {
                 $data = $response->json();
@@ -101,6 +128,7 @@ class EnrichThreatLogsCommand extends Command
                     'country_name' => $data['country'] ?? null,
                     'city' => $data['city'] ?? null,
                     'isp' => $data['isp'] ?? null,
+                    'org' => $data['org'] ?? null,
                 ];
             }
         } catch (\Throwable $e) {
@@ -110,15 +138,28 @@ class EnrichThreatLogsCommand extends Command
         return [];
     }
 
-    protected function detectCloudProvider(string $ip): ?string
+    /**
+     * Detect cloud provider using ISP/org data first, IP prefix as fallback.
+     */
+    protected function detectCloudProvider(string $ip, ?string $isp = null, ?string $org = null): ?string
     {
-        foreach ($this->cloudProviders as $provider => $prefixes) {
+        // Primary: match against ISP/org keywords from the API
+        $searchText = strtolower(($isp ?? '') . ' ' . ($org ?? ''));
+        foreach ($this->cloudIspKeywords as $keyword => $provider) {
+            if (str_contains($searchText, strtolower($keyword))) {
+                return $provider;
+            }
+        }
+
+        // Fallback: IP prefix matching for when API data is unavailable
+        foreach ($this->cloudPrefixes as $provider => $prefixes) {
             foreach ($prefixes as $prefix) {
                 if (str_starts_with($ip, $prefix)) {
                     return $provider;
                 }
             }
         }
+
         return null;
     }
 }
