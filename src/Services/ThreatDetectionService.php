@@ -200,11 +200,6 @@ class ThreatDetectionService
             'Session ID Leak', 'Bearer Token Detected', 'Access Token Leak', 'API Key Exposure',
         ];
 
-        $allPatterns = array_merge(
-            array_map(fn($label) => ['label' => $label, 'source' => $source], $this->getDefaultThreatPatterns()),
-            array_map(fn($label) => ['label' => $label, 'source' => 'custom'], config('threat-detection.custom_patterns', []))
-        );
-
         foreach ($segments as $context => $segmentPayload) {
             if (empty($segmentPayload)) {
                 continue;
@@ -286,6 +281,8 @@ class ThreatDetectionService
             'type' => $type,
             'payload' => 'Request frequency exceeded threshold',
             'threat_level' => $level,
+            'confidence_score' => 90,
+            'confidence_label' => 'very_high',
             'action_taken' => 'logged',
             'user_id' => Auth::id(),
             'created_at' => now(),
