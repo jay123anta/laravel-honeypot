@@ -5,6 +5,8 @@ namespace JayAnta\ThreatDetection;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Routing\Router;
 use JayAnta\ThreatDetection\Services\ThreatDetectionService;
+use JayAnta\ThreatDetection\Services\ConfidenceScorer;
+use JayAnta\ThreatDetection\Services\ExclusionRuleService;
 use JayAnta\ThreatDetection\Http\Middleware\ThreatDetectionMiddleware;
 use JayAnta\ThreatDetection\Console\Commands\EnrichThreatLogsCommand;
 use JayAnta\ThreatDetection\Console\Commands\ThreatStatsCommand;
@@ -23,9 +25,16 @@ class ThreatDetectionServiceProvider extends ServiceProvider
             'threat-detection'
         );
 
+        // Register supporting services
+        $this->app->singleton(ConfidenceScorer::class, fn() => new ConfidenceScorer());
+        $this->app->singleton(ExclusionRuleService::class, fn() => new ExclusionRuleService());
+
         // Register the main service
         $this->app->singleton('threat-detection', function ($app) {
-            return new ThreatDetectionService();
+            return new ThreatDetectionService(
+                $app->make(ConfidenceScorer::class),
+                $app->make(ExclusionRuleService::class)
+            );
         });
 
         $this->app->singleton(ThreatDetectionService::class, function ($app) {
@@ -59,6 +68,8 @@ class ThreatDetectionServiceProvider extends ServiceProvider
             // Publish migrations
             $this->publishes([
                 __DIR__ . '/../database/migrations/create_threat_logs_table.php.stub' => database_path('migrations/' . date('Y_m_d_His') . '_create_threat_logs_table.php'),
+                __DIR__ . '/../database/migrations/add_confidence_to_threat_logs_table.php.stub' => database_path('migrations/' . date('Y_m_d_His', time() + 1) . '_add_confidence_to_threat_logs_table.php'),
+                __DIR__ . '/../database/migrations/create_threat_exclusion_rules_table.php.stub' => database_path('migrations/' . date('Y_m_d_His', time() + 2) . '_create_threat_exclusion_rules_table.php'),
             ], 'threat-detection-migrations');
 
             // Publish views (only if views directory exists)
