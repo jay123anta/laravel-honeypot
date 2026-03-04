@@ -79,4 +79,28 @@ class MiddlewareTest extends TestCase
 
         $this->assertEquals(200, $response->getStatusCode());
     }
+
+    /** @test */
+    public function it_sets_content_path_attribute(): void
+    {
+        $request = Request::create('/admin/posts/edit', 'POST');
+
+        $this->runMiddleware($request, [
+            'threat-detection.content_paths' => ['admin/posts/*'],
+        ]);
+
+        $this->assertTrue($request->attributes->get('threat-detection:content-path', false));
+    }
+
+    /** @test */
+    public function it_does_not_set_content_path_for_other_routes(): void
+    {
+        $request = Request::create('/api/users', 'GET');
+
+        $this->runMiddleware($request, [
+            'threat-detection.content_paths' => ['admin/posts/*'],
+        ]);
+
+        $this->assertNull($request->attributes->get('threat-detection:content-path'));
+    }
 }
