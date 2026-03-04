@@ -14,11 +14,17 @@ class ThreatDetectionService
 {
     protected int $ddosThreshold;
     protected int $ddosWindowSeconds;
+    protected ConfidenceScorer $confidenceScorer;
+    protected ExclusionRuleService $exclusionRuleService;
 
-    public function __construct()
-    {
+    public function __construct(
+        ?ConfidenceScorer $confidenceScorer = null,
+        ?ExclusionRuleService $exclusionRuleService = null
+    ) {
         $this->ddosThreshold = config('threat-detection.ddos.threshold', 100);
         $this->ddosWindowSeconds = config('threat-detection.ddos.window', 60);
+        $this->confidenceScorer = $confidenceScorer ?? new ConfidenceScorer();
+        $this->exclusionRuleService = $exclusionRuleService ?? new ExclusionRuleService();
     }
 
     public function detectAndLogFromRequest(Request $request): void
@@ -28,30 +34,78 @@ class ThreatDetectionService
         $userAgent = $request->userAgent() ?? 'N/A';
         $payload = $this->buildSanitizedPayload($request);
         $isAuthPath = $request->attributes->get('threat-detection:auth-path', false);
+        $isContentPath = $request->attributes->get('threat-detection:content-path', false);
+        $mode = config('threat-detection.detection_mode', 'balanced');
 
         // Check for suspicious bot/scanner signatures
         $botThreats = $this->detectSuspiciousUserAgent($userAgent);
+        $isAttackTool = $this->confidenceScorer->isAttackToolUserAgent($userAgent);
 
         // Check for DDoS patterns
         if ($this->isDdosSuspected($ip)) {
             $this->logDdosThreat($ip, $url, $userAgent);
         }
 
-        // Detect threat patterns in payload
-        $threats = $this->detectThreatPatterns($payload, 'middleware', $isAuthPath);
+        // Context-aware detection: run patterns per segment
+        $segments = $this->buildPayloadSegments($request);
+        $contextMatches = $this->detectThreatPatternsWithContext($segments, 'middleware', $isAuthPath);
+
+        // Convert context matches to tuples + collect context weights
+        $patternThreats = [];
+        $contextWeights = [];
+        foreach ($contextMatches as $match) {
+            $patternThreats[] = [$match['label'], $match['threat_level'], $match['source']];
+            $weight = config('threat-detection.context_weights.' . $match['context'], 1.0);
+            $contextWeights[$match['label']] = $weight;
+        }
 
         // Merge bot threats with pattern threats
-        $allThreats = array_merge($botThreats, $threats);
+        $allThreats = array_merge($botThreats, $patternThreats);
+
+        // Calculate confidence for the entire request
+        $confidence = $this->confidenceScorer->calculate(
+            $allThreats,
+            $contextWeights,
+            $isAttackTool,
+            $mode
+        );
+
+        // Minimum confidence threshold based on sensitivity mode
+        $minConfidence = match ($mode) {
+            'strict' => 0,
+            'relaxed' => 40,
+            default => 10,
+        };
+
+        if ($confidence['score'] < $minConfidence) {
+            return;
+        }
 
         foreach ($allThreats as [$label, $level, $sourceTag]) {
+            // API route filtering
             if (
                 config('threat-detection.api_route_filtering.enabled', false)
                 && str_contains($url, '/api/')
                 && in_array($level, config('threat-detection.api_route_filtering.suppress_levels', ['low', 'medium']))
-            ) continue;
+            ) {
+                continue;
+            }
+
+            // Content path suppression: only high-severity on content paths
+            if ($isContentPath && $level !== 'high') {
+                continue;
+            }
 
             $type = "[$sourceTag] $label";
-            if ($this->isRecentlyLogged($ip, $type)) continue;
+
+            // Exclusion rules check
+            if ($this->exclusionRuleService->isExcluded($type, $url)) {
+                continue;
+            }
+
+            if ($this->isRecentlyLogged($ip, $type)) {
+                continue;
+            }
             $this->markAsLogged($ip, $type);
 
             DB::table(config('threat-detection.table_name', 'threat_logs'))->insert([
@@ -61,13 +115,15 @@ class ThreatDetectionService
                 'type' => $type,
                 'payload' => substr($payload, 0, 2000),
                 'threat_level' => $level,
+                'confidence_score' => $confidence['score'],
+                'confidence_label' => $confidence['label'],
                 'action_taken' => 'logged',
                 'user_id' => Auth::id(),
                 'created_at' => now(),
                 'updated_at' => now(),
             ]);
 
-            Log::warning("[$level] Threat Detected: [$type] from $ip ($url)");
+            Log::warning("[$level] Threat Detected: [$type] from $ip ($url) [confidence: {$confidence['score']}%]");
 
             if (
                 config('threat-detection.notifications.enabled') &&
