@@ -54,6 +54,14 @@ class ThreatDetectionMiddleware
                 $request->attributes->set('threat-detection:auth-path', true);
             }
 
+            // Check if this is a content path - suppress non-high threats
+            foreach (config('threat-detection.content_paths', []) as $contentPath) {
+                if (fnmatch($contentPath, $uri)) {
+                    $request->attributes->set('threat-detection:content-path', true);
+                    break;
+                }
+            }
+
             // Smart API Filtering: If route is /api/* and threat is low/medium → optionally skip
             if (
                 config('threat-detection.api_route_filtering.enabled', true)
