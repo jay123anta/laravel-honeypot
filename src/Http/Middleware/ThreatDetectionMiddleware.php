@@ -62,14 +62,6 @@ class ThreatDetectionMiddleware
                 }
             }
 
-            // Smart API Filtering: If route is /api/* and threat is low/medium → optionally skip
-            if (
-                config('threat-detection.api_route_filtering.enabled', true)
-                && str_starts_with($request->path(), 'api/')
-            ) {
-                $request->attributes->set('threat-detection:api-suppress-levels', config('threat-detection.api_route_filtering.suppress_levels', []));
-            }
-
             // Run detection using a context-aware method
             $this->detector->detectAndLogFromRequest($request);
 

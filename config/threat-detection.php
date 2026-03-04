@@ -115,34 +115,6 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Offense Settings
-    |--------------------------------------------------------------------------
-    |
-    | Configure blocking behavior for repeat offenders.
-    |
-    */
-    'max_offenses' => env('THREAT_DETECTION_MAX_OFFENSES', 5),
-    'block_duration' => env('THREAT_DETECTION_BLOCK_DURATION', 60),
-    'block_response' => env('THREAT_DETECTION_BLOCK_RESPONSE', 'default'),
-    'redirect_url' => env('THREAT_DETECTION_REDIRECT_URL', null),
-
-    /*
-    |--------------------------------------------------------------------------
-    | Actions by Threat Level
-    |--------------------------------------------------------------------------
-    |
-    | Define what action to take for each threat level.
-    | Options: 'log', 'block', 'notify'
-    |
-    */
-    'actions' => [
-        'high' => env('THREAT_DETECTION_HIGH_ACTION', 'block'),
-        'medium' => env('THREAT_DETECTION_MEDIUM_ACTION', 'log'),
-        'low' => env('THREAT_DETECTION_LOW_ACTION', 'log'),
-    ],
-
-    /*
-    |--------------------------------------------------------------------------
     | DDoS Protection
     |--------------------------------------------------------------------------
     |
@@ -152,25 +124,6 @@ return [
     'ddos' => [
         'threshold' => env('THREAT_DETECTION_DDOS_THRESHOLD', 300),
         'window' => env('THREAT_DETECTION_DDOS_WINDOW', 60),
-    ],
-
-    /*
-    |--------------------------------------------------------------------------
-    | Rate Limiting
-    |--------------------------------------------------------------------------
-    |
-    | Configure rate limiting thresholds.
-    |
-    */
-    'rate_limiting' => [
-        'global' => [
-            'limit' => env('THREAT_DETECTION_RATE_LIMIT_GLOBAL', 60),
-            'period' => env('THREAT_DETECTION_RATE_PERIOD_GLOBAL', 60),
-        ],
-        'per_url' => [
-            'limit' => env('THREAT_DETECTION_RATE_LIMIT_URL', 30),
-            'period' => env('THREAT_DETECTION_RATE_PERIOD_URL', 60),
-        ],
     ],
 
     /*
@@ -241,7 +194,6 @@ return [
     */
     'notifications' => [
         'enabled' => env('THREAT_DETECTION_NOTIFICATIONS', false),
-        'email' => env('THREAT_DETECTION_NOTIFICATION_EMAIL', ''),
         'slack_channel' => env('THREAT_DETECTION_SLACK_CHANNEL', '#threat-alerts'),
         'slack_webhook' => env('THREAT_DETECTION_SLACK_WEBHOOK', ''),
         'slack_username' => env('THREAT_DETECTION_SLACK_USERNAME', 'ThreatBot'),
@@ -374,21 +326,6 @@ return [
         // Reverse Shell
         '/bash\s+-i\s*>|\/dev\/tcp/i' => 'Reverse Shell Attempt',
         '/nc\s+-e\s+\/bin/i' => 'Netcat Reverse Shell',
-    ],
-
-    /*
-    |--------------------------------------------------------------------------
-    | Honeypot Fields
-    |--------------------------------------------------------------------------
-    |
-    | Configure hidden form fields to detect bots.
-    |
-    */
-    'honeypot_fields' => [
-        'enabled' => true,
-        'field_name' => 'website_url',
-        'field_time' => 'completion_time',
-        'min_submit_time' => 3,
     ],
 
     /*
