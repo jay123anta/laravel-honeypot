@@ -259,7 +259,7 @@ class ThreatLogController extends Controller
     public function export(Request $request)
     {
         $query = DB::table($this->table)
-            ->select('id', 'created_at', 'ip_address', 'url', 'type', 'threat_level', 'action_taken', 'country_name', 'cloud_provider');
+            ->select('id', 'created_at', 'ip_address', 'url', 'type', 'threat_level', 'confidence_score', 'is_false_positive', 'action_taken', 'country_name', 'cloud_provider');
 
         if ($request->filled('keyword')) {
             $keyword = '%' . $request->keyword . '%';
@@ -276,7 +276,7 @@ class ThreatLogController extends Controller
 
         $logs = $query->orderByDesc('created_at')->get();
 
-        $csvHeader = ['ID', 'Time', 'IP Address', 'URL', 'Type', 'Level', 'Action', 'Country', 'Cloud Provider'];
+        $csvHeader = ['ID', 'Time', 'IP Address', 'URL', 'Type', 'Level', 'Confidence', 'False Positive', 'Action', 'Country', 'Cloud Provider'];
         $csvData = $logs->map(function ($log) {
             return [
                 $log->id,
@@ -285,6 +285,8 @@ class ThreatLogController extends Controller
                 $log->url,
                 $log->type,
                 $log->threat_level,
+                ($log->confidence_score ?? 0) . '%',
+                ($log->is_false_positive ?? false) ? 'Yes' : 'No',
                 $log->action_taken,
                 $log->country_name ?? 'N/A',
                 $log->cloud_provider ?? 'N/A',
