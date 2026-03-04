@@ -32,4 +32,11 @@ Route::prefix(config('threat-detection.api.prefix', 'api/threat-detection'))
 
         // Export
         Route::get('/export', [ThreatLogController::class, 'export']);
+
+        // False positive reporting
+        Route::post('/threats/{id}/false-positive', [ThreatLogController::class, 'markFalsePositive']);
+
+        // Exclusion rules management
+        Route::get('/exclusion-rules', [ThreatLogController::class, 'exclusionRules']);
+        Route::delete('/exclusion-rules/{id}', [ThreatLogController::class, 'deleteExclusionRule']);
     });
