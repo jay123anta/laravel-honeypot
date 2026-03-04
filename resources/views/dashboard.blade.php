@@ -51,7 +51,9 @@
                         <th class="px-4 py-3">IP</th>
                         <th class="px-4 py-3">Type</th>
                         <th class="px-4 py-3">Level</th>
+                        <th class="px-4 py-3">Confidence</th>
                         <th class="px-4 py-3">URL</th>
+                        <th class="px-4 py-3">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -65,11 +67,25 @@
                                     :class="levelBadge(threat.threat_level)"
                                     x-text="threat.threat_level"></span>
                             </td>
+                            <td class="px-4 py-2.5">
+                                <span class="px-2 py-0.5 rounded text-xs font-medium"
+                                    :class="confidenceBadge(threat.confidence_label)"
+                                    x-text="(threat.confidence_score ?? 0) + '%'"></span>
+                            </td>
                             <td class="px-4 py-2.5 text-gray-400 max-w-xs truncate" x-text="threat.url"></td>
+                            <td class="px-4 py-2.5">
+                                <button x-show="!threat.is_false_positive"
+                                    @click="markFalsePositive(threat.id)"
+                                    class="text-xs bg-yellow-600/20 text-yellow-400 px-2 py-1 rounded hover:bg-yellow-600/40 cursor-pointer">
+                                    FP
+                                </button>
+                                <span x-show="threat.is_false_positive"
+                                    class="text-xs text-gray-500 italic">Excluded</span>
+                            </td>
                         </tr>
                     </template>
                     <tr x-show="threats.data && threats.data.length === 0">
-                        <td colspan="5" class="px-4 py-8 text-center text-gray-500">No threats found.</td>
+                        <td colspan="7" class="px-4 py-8 text-center text-gray-500">No threats found.</td>
                     </tr>
                 </tbody>
             </table>
@@ -254,6 +270,38 @@ function threatDashboard() {
                 medium: 'bg-yellow-500/20 text-yellow-400',
                 low: 'bg-blue-500/20 text-blue-400',
             }[level] ?? 'bg-gray-500/20 text-gray-400';
+        },
+
+        confidenceBadge(label) {
+            return {
+                very_high: 'bg-red-500/20 text-red-400',
+                high: 'bg-orange-500/20 text-orange-400',
+                medium: 'bg-yellow-500/20 text-yellow-400',
+                low: 'bg-green-500/20 text-green-400',
+            }[label] ?? 'bg-gray-500/20 text-gray-400';
+        },
+
+        async markFalsePositive(id) {
+            if (!confirm('Mark this threat as a false positive?')) return;
+            try {
+                const r = await fetch(API + '/threats/' + id + '/false-positive', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content ?? '',
+                    },
+                });
+                if (r.ok) {
+                    const threat = this.threats.data.find(t => t.id === id);
+                    if (threat) threat.is_false_positive = true;
+                } else {
+                    alert('Failed to mark as false positive.');
+                }
+            } catch (e) {
+                console.error('False positive failed:', e);
+                alert('Request failed.');
+            }
         },
 
         formatDate(dt) {
