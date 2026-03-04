@@ -25,7 +25,7 @@ class ThreatLogController extends Controller
     public function index(Request $request): JsonResponse
     {
         $query = DB::table($this->table)
-            ->select('id', 'ip_address', 'url', 'type', 'threat_level', 'action_taken', 'country_code', 'country_name', 'cloud_provider', 'is_foreign', 'created_at');
+            ->select('id', 'ip_address', 'url', 'type', 'threat_level', 'confidence_score', 'confidence_label', 'is_false_positive', 'action_taken', 'country_code', 'country_name', 'cloud_provider', 'is_foreign', 'created_at');
 
         // Search keyword
         if ($request->has('keyword')) {
