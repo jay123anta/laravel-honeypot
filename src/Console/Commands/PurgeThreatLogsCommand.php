@@ -4,6 +4,7 @@ namespace JayAnta\ThreatDetection\Console\Commands;
 
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class PurgeThreatLogsCommand extends Command
 {
@@ -30,11 +31,29 @@ class PurgeThreatLogsCommand extends Command
         $this->warn("This will permanently delete {$count} threat log(s) older than {$days} days.");
 
         if (!$this->input->isInteractive() || $this->confirm('Are you sure you want to proceed?')) {
+            // Collect IDs of threats being purged for exclusion rule cleanup
+            $purgedIds = DB::table($table)
+                ->where('created_at', '<', $cutoff)
+                ->pluck('id');
+
             $deleted = DB::table($table)
                 ->where('created_at', '<', $cutoff)
                 ->delete();
 
             $this->info("Successfully deleted {$deleted} threat log(s).");
+
+            // Clean up orphaned exclusion rules that referenced purged threats
+            if (Schema::hasTable('threat_exclusion_rules') && $purgedIds->isNotEmpty()) {
+                $orphaned = DB::table('threat_exclusion_rules')
+                    ->whereNotNull('created_from_threat_id')
+                    ->whereIn('created_from_threat_id', $purgedIds)
+                    ->delete();
+
+                if ($orphaned > 0) {
+                    $this->info("Removed {$orphaned} orphaned exclusion rule(s).");
+                }
+            }
+
             return 0;
         }
 
