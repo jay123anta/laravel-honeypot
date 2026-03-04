@@ -171,7 +171,10 @@ class ThreatLogController extends Controller
             ->where('created_at', '>=', now()->subHour())
             ->count();
 
-        return response()->json(['count' => $count]);
+        return response()->json([
+            'success' => true,
+            'data' => ['count' => $count]
+        ]);
     }
 
     /**
@@ -184,7 +187,7 @@ class ThreatLogController extends Controller
             ->first();
 
         if (!$threat) {
-            return response()->json(['message' => 'Threat not found'], 404);
+            return response()->json(['success' => false, 'message' => 'Threat not found'], 404);
         }
 
         return response()->json([
@@ -238,6 +241,7 @@ class ThreatLogController extends Controller
      */
     public function correlation(Request $request, ThreatDetectionService $service): JsonResponse
     {
+        $request->validate(['type' => 'sometimes|in:all,coordinated,campaigns,rapid']);
         $type = $request->input('type', 'all');
         $data = [];
 

@@ -116,9 +116,10 @@ class ApiEndpointTest extends TestCase
         $response = $this->getJson('/api/threat-detection/live-count');
 
         $response->assertStatus(200)
-            ->assertJsonStructure(['count']);
+            ->assertJson(['success' => true])
+            ->assertJsonStructure(['success', 'data' => ['count']]);
 
-        $this->assertEquals(3, $response->json('count'));
+        $this->assertEquals(3, $response->json('data.count'));
     }
 
     /** @test */

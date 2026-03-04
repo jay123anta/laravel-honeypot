@@ -84,7 +84,7 @@ class ThreatDetectionService
         foreach ($allThreats as [$label, $level, $sourceTag]) {
             // API route filtering
             if (
-                config('threat-detection.api_route_filtering.enabled', false)
+                config('threat-detection.api_route_filtering.enabled', true)
                 && str_contains($url, '/api/')
                 && in_array($level, config('threat-detection.api_route_filtering.suppress_levels', ['low', 'medium']))
             ) {
