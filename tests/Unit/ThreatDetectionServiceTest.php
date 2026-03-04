@@ -4,6 +4,9 @@ namespace JayAnta\ThreatDetection\Tests\Unit;
 
 use JayAnta\ThreatDetection\Services\ThreatDetectionService;
 use JayAnta\ThreatDetection\Tests\TestCase;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 
 class ThreatDetectionServiceTest extends TestCase
 {
@@ -115,5 +118,32 @@ class ThreatDetectionServiceTest extends TestCase
 
         $this->assertNotContains('Password Exposure', $authLabels);
         $this->assertContains('Password Exposure', $nonAuthLabels);
+    }
+
+    /** @test */
+    public function it_logs_ddos_when_threshold_exceeded(): void
+    {
+        $this->createThreatLogsTable();
+
+        // Set a low threshold for testing
+        config(['threat-detection.ddos.threshold' => 3]);
+        config(['threat-detection.ddos.window' => 60]);
+
+        $service = new ThreatDetectionService();
+
+        // Pre-fill cache to simulate requests just below threshold
+        Cache::put('ddos:10.0.0.1', 3, now()->addSeconds(60));
+
+        // Next request should exceed threshold and log DDoS
+        $request = Request::create('/test', 'GET');
+        $request->server->set('REMOTE_ADDR', '10.0.0.1');
+
+        $service->detectAndLogFromRequest($request);
+
+        $this->assertDatabaseHas('threat_logs', [
+            'ip_address' => '10.0.0.1',
+            'type' => '[ddos] Excessive Requests',
+            'threat_level' => 'high',
+        ]);
     }
 }

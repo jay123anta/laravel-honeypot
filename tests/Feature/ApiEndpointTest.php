@@ -219,4 +219,209 @@ class ApiEndpointTest extends TestCase
 
         $response->assertStatus(404);
     }
+
+    /** @test */
+    public function summary_endpoint_returns_correct_structure(): void
+    {
+        $this->seedThreats(5);
+
+        $response = $this->getJson('/api/threat-detection/summary');
+
+        $response->assertStatus(200)
+            ->assertJson(['success' => true])
+            ->assertJsonStructure([
+                'success',
+                'data' => [
+                    'byType',
+                    'byLevel',
+                    'byIP',
+                    'byCountry',
+                    'byCloudProvider',
+                    'byDate',
+                ],
+            ]);
+    }
+
+    /** @test */
+    public function by_country_endpoint_returns_data(): void
+    {
+        DB::table('threat_logs')->insert([
+            'ip_address' => '10.0.0.1',
+            'url' => 'https://example.com/test',
+            'type' => '[test] XSS',
+            'threat_level' => 'high',
+            'action_taken' => 'logged',
+            'country_code' => 'US',
+            'country_name' => 'United States',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $response = $this->getJson('/api/threat-detection/by-country');
+
+        $response->assertStatus(200)
+            ->assertJson(['success' => true]);
+
+        $data = $response->json('data');
+        $this->assertNotEmpty($data);
+        $this->assertEquals('US', $data[0]['country_code']);
+    }
+
+    /** @test */
+    public function by_cloud_provider_endpoint_returns_data(): void
+    {
+        DB::table('threat_logs')->insert([
+            'ip_address' => '10.0.0.1',
+            'url' => 'https://example.com/test',
+            'type' => '[test] XSS',
+            'threat_level' => 'high',
+            'action_taken' => 'logged',
+            'cloud_provider' => 'AWS',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $response = $this->getJson('/api/threat-detection/by-cloud-provider');
+
+        $response->assertStatus(200)
+            ->assertJson(['success' => true]);
+
+        $data = $response->json('data');
+        $this->assertNotEmpty($data);
+        $this->assertEquals('AWS', $data[0]['cloud_provider']);
+    }
+
+    /** @test */
+    public function top_ips_endpoint_returns_data_with_limit(): void
+    {
+        $this->seedThreats(10);
+
+        $response = $this->getJson('/api/threat-detection/top-ips?limit=5');
+
+        $response->assertStatus(200)
+            ->assertJson(['success' => true]);
+
+        $data = $response->json('data');
+        $this->assertLessThanOrEqual(5, count($data));
+    }
+
+    /** @test */
+    public function timeline_endpoint_returns_grouped_data(): void
+    {
+        $this->seedThreats(3);
+
+        $response = $this->getJson('/api/threat-detection/timeline?days=7');
+
+        $response->assertStatus(200)
+            ->assertJson(['success' => true])
+            ->assertJsonStructure(['success', 'data']);
+    }
+
+    /** @test */
+    public function ip_stats_endpoint_returns_stats(): void
+    {
+        $this->seedThreats(3);
+
+        $response = $this->getJson('/api/threat-detection/ip-stats?ip=10.0.0.0');
+
+        $response->assertStatus(200)
+            ->assertJson(['success' => true])
+            ->assertJsonStructure([
+                'success',
+                'data' => [
+                    'ip_address',
+                    'statistics',
+                    'recent_threats',
+                    'level_breakdown',
+                ],
+            ]);
+    }
+
+    /** @test */
+    public function ip_stats_requires_valid_ip(): void
+    {
+        $response = $this->getJson('/api/threat-detection/ip-stats');
+
+        $response->assertStatus(422);
+    }
+
+    /** @test */
+    public function correlation_endpoint_returns_data(): void
+    {
+        $this->seedThreats(5);
+
+        $response = $this->getJson('/api/threat-detection/correlation?type=all');
+
+        $response->assertStatus(200)
+            ->assertJson(['success' => true])
+            ->assertJsonStructure([
+                'success',
+                'data',
+            ]);
+    }
+
+    /** @test */
+    public function export_endpoint_returns_csv(): void
+    {
+        $this->seedThreats(3);
+
+        $response = $this->get('/api/threat-detection/export');
+
+        $response->assertStatus(200);
+        $this->assertStringContainsString('text/csv', $response->headers->get('Content-Type'));
+        $this->assertStringContainsString('attachment', $response->headers->get('Content-Disposition'));
+        $this->assertStringContainsString('ID,Time,"IP Address"', $response->getContent());
+    }
+
+    /** @test */
+    public function threats_endpoint_supports_false_positive_filter(): void
+    {
+        $this->seedThreats(5);
+        DB::table('threat_logs')->where('id', 1)->update(['is_false_positive' => true]);
+
+        $response = $this->getJson('/api/threat-detection/threats?is_false_positive=true');
+
+        $response->assertStatus(200);
+        $threats = $response->json('data.data');
+        $this->assertCount(1, $threats);
+        $this->assertTrue((bool) $threats[0]['is_false_positive']);
+    }
+
+    /** @test */
+    public function threats_endpoint_supports_date_filters(): void
+    {
+        $this->seedThreats(3);
+        DB::table('threat_logs')->where('id', 1)->update([
+            'created_at' => now()->subDays(10),
+        ]);
+
+        $response = $this->getJson('/api/threat-detection/threats?date_from=' . now()->subDay()->toDateString());
+
+        $response->assertStatus(200);
+        $this->assertEquals(2, $response->json('data.total'));
+    }
+
+    /** @test */
+    public function threats_endpoint_validates_per_page(): void
+    {
+        $response = $this->getJson('/api/threat-detection/threats?per_page=999999');
+
+        $response->assertStatus(422);
+    }
+
+    /** @test */
+    public function top_ips_validates_limit(): void
+    {
+        $response = $this->getJson('/api/threat-detection/top-ips?limit=999');
+
+        $response->assertStatus(422);
+    }
+
+    /** @test */
+    public function timeline_validates_days(): void
+    {
+        $response = $this->getJson('/api/threat-detection/timeline?days=0');
+
+        $response->assertStatus(422);
+    }
 }
