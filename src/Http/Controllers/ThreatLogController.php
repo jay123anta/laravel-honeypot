@@ -8,6 +8,7 @@ use Illuminate\Routing\Controller;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Response;
 use JayAnta\ThreatDetection\Services\ThreatDetectionService;
+use JayAnta\ThreatDetection\Services\ExclusionRuleService;
 
 class ThreatLogController extends Controller
 {
@@ -381,6 +382,66 @@ class ThreatLogController extends Controller
         return response()->json([
             'success' => true,
             'data' => $data
+        ]);
+    }
+
+    /**
+     * Mark a threat as false positive and create an exclusion rule.
+     */
+    public function markFalsePositive(Request $request, int $id, ExclusionRuleService $exclusionService): JsonResponse
+    {
+        $threat = DB::table($this->table)->where('id', $id)->first();
+
+        if (!$threat) {
+            return response()->json(['success' => false, 'message' => 'Threat not found'], 404);
+        }
+
+        DB::table($this->table)->where('id', $id)->update([
+            'is_false_positive' => true,
+            'updated_at' => now(),
+        ]);
+
+        $rule = $exclusionService->createFromThreat(
+            $id,
+            $request->user()?->id,
+            $request->input('reason')
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Marked as false positive and exclusion rule created.',
+            'data' => [
+                'threat_id' => $id,
+                'exclusion_rule' => $rule,
+            ],
+        ]);
+    }
+
+    /**
+     * List all exclusion rules.
+     */
+    public function exclusionRules(ExclusionRuleService $exclusionService): JsonResponse
+    {
+        return response()->json([
+            'success' => true,
+            'data' => $exclusionService->all(),
+        ]);
+    }
+
+    /**
+     * Delete an exclusion rule.
+     */
+    public function deleteExclusionRule(int $id, ExclusionRuleService $exclusionService): JsonResponse
+    {
+        $deleted = $exclusionService->delete($id);
+
+        if (!$deleted) {
+            return response()->json(['success' => false, 'message' => 'Rule not found'], 404);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Exclusion rule deleted.',
         ]);
     }
 }
