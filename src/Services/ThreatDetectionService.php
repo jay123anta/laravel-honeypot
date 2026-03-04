@@ -117,7 +117,6 @@ class ThreatDetectionService
                 'threat_level' => $level,
                 'confidence_score' => $confidence['score'],
                 'confidence_label' => $confidence['label'],
-                'action_taken' => 'logged',
                 'user_id' => Auth::id(),
                 'created_at' => now(),
                 'updated_at' => now(),
@@ -261,8 +260,8 @@ class ThreatDetectionService
     private function isDdosSuspected(string $ip): bool
     {
         $key = "ddos:$ip";
+        Cache::add($key, 0, now()->addSeconds($this->ddosWindowSeconds));
         $count = Cache::increment($key);
-        Cache::put($key, $count, now()->addSeconds($this->ddosWindowSeconds));
         return $count > $this->ddosThreshold;
     }
 
@@ -283,7 +282,6 @@ class ThreatDetectionService
             'threat_level' => $level,
             'confidence_score' => 90,
             'confidence_label' => 'very_high',
-            'action_taken' => 'logged',
             'user_id' => Auth::id(),
             'created_at' => now(),
             'updated_at' => now(),

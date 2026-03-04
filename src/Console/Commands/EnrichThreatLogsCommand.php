@@ -84,7 +84,7 @@ class EnrichThreatLogsCommand extends Command
                 ->update($data);
 
             $bar->advance();
-            usleep(200000); // Rate limit: 5 requests/second
+            usleep(1400000); // Rate limit: ~43 req/min (ip-api.com free tier allows 45/min)
         }
 
         $bar->finish();
