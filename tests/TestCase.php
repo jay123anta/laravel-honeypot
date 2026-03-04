@@ -32,6 +32,21 @@ abstract class TestCase extends OrchestraTestCase
         $app['config']->set('threat-detection.api.middleware', ['api']);
     }
 
+    protected function createExclusionRulesTable(): void
+    {
+        Schema::create('threat_exclusion_rules', function (Blueprint $table) {
+            $table->id();
+            $table->string('pattern_label');
+            $table->string('path_pattern')->nullable();
+            $table->string('source_context')->nullable();
+            $table->unsignedBigInteger('created_from_threat_id')->nullable();
+            $table->unsignedBigInteger('created_by_user_id')->nullable();
+            $table->text('reason')->nullable();
+            $table->boolean('is_active')->default(true)->index();
+            $table->timestamps();
+        });
+    }
+
     protected function createThreatLogsTable(): void
     {
         Schema::create(config('threat-detection.table_name', 'threat_logs'), function (Blueprint $table) {
@@ -42,6 +57,9 @@ abstract class TestCase extends OrchestraTestCase
             $table->text('type');
             $table->text('payload')->nullable();
             $table->string('threat_level')->default('medium')->index();
+            $table->unsignedTinyInteger('confidence_score')->default(0)->index();
+            $table->string('confidence_label', 20)->default('low');
+            $table->boolean('is_false_positive')->default(false)->index();
             $table->string('action_taken')->default('logged');
             $table->unsignedBigInteger('user_id')->nullable()->index();
             $table->string('country_code', 5)->nullable()->index();
