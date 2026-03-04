@@ -101,6 +101,102 @@ class ThreatDetectionService
         return implode("\n", $data);
     }
 
+    /**
+     * Build payload segments for context-aware detection.
+     */
+    private function buildPayloadSegments(Request $request): array
+    {
+        $segments = ['query' => '', 'body' => '', 'headers' => ''];
+
+        if (!empty($request->query())) {
+            $segments['query'] = json_encode($request->query(), JSON_UNESCAPED_SLASHES);
+        }
+
+        if (!empty($request->post())) {
+            $segments['body'] = json_encode($request->post(), JSON_UNESCAPED_SLASHES);
+        }
+
+        $headers = collect($request->headers->all())
+            ->except(['cookie', 'x-xsrf-token', 'accept-language', 'accept-encoding', 'connection', 'host'])
+            ->map(fn($v) => is_array($v) ? implode('; ', array_slice($v, 0, 2)) : $v);
+
+        if ($headers->isNotEmpty()) {
+            $segments['headers'] = json_encode($headers, JSON_UNESCAPED_SLASHES);
+        }
+
+        return $segments;
+    }
+
+    /**
+     * Detect threats with context metadata for each match.
+     */
+    public function detectThreatPatternsWithContext(
+        array $segments,
+        string $source = 'default',
+        bool $isAuthPath = false
+    ): array {
+        $matches = [];
+        $mode = config('threat-detection.detection_mode', 'balanced');
+
+        $authExcludePatterns = [
+            'Password Exposure', 'Mobile Number Detected', 'Aadhaar Number Detected',
+            'PAN Number Detected', 'Bank Account Number Detected', 'IFSC Code Detected',
+            'Session ID Leak', 'Bearer Token Detected', 'Access Token Leak', 'API Key Exposure',
+        ];
+
+        $allPatterns = array_merge(
+            array_map(fn($label) => ['label' => $label, 'source' => $source], $this->getDefaultThreatPatterns()),
+            array_map(fn($label) => ['label' => $label, 'source' => 'custom'], config('threat-detection.custom_patterns', []))
+        );
+
+        foreach ($segments as $context => $segmentPayload) {
+            if (empty($segmentPayload)) {
+                continue;
+            }
+
+            foreach ($this->getDefaultThreatPatterns() as $regex => $label) {
+                $level = $this->getThreatLevelByType($label);
+
+                // Relaxed mode: skip non-high patterns
+                if ($mode === 'relaxed' && $level !== 'high') {
+                    continue;
+                }
+
+                if (@preg_match($regex, $segmentPayload)) {
+                    $matches[] = [
+                        'label' => $label,
+                        'threat_level' => $level,
+                        'source' => $source,
+                        'context' => $context,
+                    ];
+                }
+            }
+
+            foreach (config('threat-detection.custom_patterns', []) as $regex => $label) {
+                if ($isAuthPath && in_array($label, $authExcludePatterns)) {
+                    continue;
+                }
+
+                $level = $this->getThreatLevelByType($label);
+
+                if ($mode === 'relaxed' && $level !== 'high') {
+                    continue;
+                }
+
+                if (@preg_match($regex, $segmentPayload)) {
+                    $matches[] = [
+                        'label' => $label,
+                        'threat_level' => $level,
+                        'source' => 'custom',
+                        'context' => $context,
+                    ];
+                }
+            }
+        }
+
+        return $matches;
+    }
+
     private function isRecentlyLogged(string $ip, string $type): bool
     {
         return Cache::has('threat_logged:' . md5($ip . $type));
