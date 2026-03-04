@@ -56,6 +56,8 @@ The package ships with a built-in dark-mode dashboard (Alpine.js + Tailwind CDN 
 ```
 
 > Enable with `THREAT_DETECTION_DASHBOARD=true` in your `.env`
+>
+> **Note:** The dashboard fetches data from the API endpoints, which use `auth:sanctum` by default. For the dashboard to work, your app must have Laravel Sanctum configured for SPA authentication (session-based). Ensure `SANCTUM_STATEFUL_DOMAINS` includes your app domain, or change the API middleware in the config to `['api', 'auth']` if you use standard session auth.
 
 ---
 
@@ -138,7 +140,7 @@ THREAT_DETECTION_DDOS_THRESHOLD=300
 THREAT_DETECTION_DDOS_WINDOW=60
 
 # Notifications
-THREAT_DETECTION_NOTIFICATIONS=true
+THREAT_DETECTION_NOTIFICATIONS=false
 THREAT_DETECTION_SLACK_WEBHOOK=https://hooks.slack.com/services/...
 THREAT_DETECTION_SLACK_CHANNEL=#threat-alerts
 
@@ -147,9 +149,9 @@ THREAT_DETECTION_API=true
 THREAT_DETECTION_DASHBOARD=true
 ```
 
-### Slack Notifications (Laravel 11+)
+### Slack Notifications (Laravel 10.13+)
 
-Laravel 11 removed the built-in Slack channel. Install separately:
+Laravel 10.13+ removed the built-in Slack notification channel. Install separately:
 
 ```bash
 composer require laravel/slack-notification-channel
@@ -200,8 +202,9 @@ The package provides 15 authenticated REST endpoints for building custom dashboa
 | `country` | Filter by country code |
 | `is_foreign` | Filter foreign IPs (true/false) |
 | `cloud_provider` | Filter by cloud provider |
+| `is_false_positive` | Filter by false positive status (true/false) |
 | `date_from` / `date_to` | Date range |
-| `per_page` | Items per page (default: 20) |
+| `per_page` | Items per page (default: 20, max: 100) |
 
 ---
 
@@ -386,7 +389,7 @@ Uses the free [ip-api.com](http://ip-api.com) service (HTTP, rate-limited to 45 
 composer test
 ```
 
-The package includes 46 tests covering service detection, middleware behavior, API endpoints, confidence scoring, and exclusion rules.
+The package includes 61 tests covering service detection, middleware behavior, API endpoints, confidence scoring, exclusion rules, DDoS detection, and input validation.
 
 ---
 
