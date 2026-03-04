@@ -86,6 +86,24 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Content Paths
+    |--------------------------------------------------------------------------
+    |
+    | Paths where rich user content is expected (blog editors, CMS, comments).
+    | On these paths, only HIGH severity patterns will trigger detection.
+    | Medium and low severity matches are suppressed to reduce false positives.
+    |
+    */
+    'content_paths' => [
+        // 'admin/posts/*',
+        // 'admin/pages/*',
+        // 'blog/*/edit',
+        // 'comments',
+        // 'api/posts',
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Whitelisted IPs
     |--------------------------------------------------------------------------
     |
