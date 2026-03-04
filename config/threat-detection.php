@@ -202,6 +202,37 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Detection Mode (Sensitivity)
+    |--------------------------------------------------------------------------
+    |
+    | Controls the overall strictness of threat detection.
+    |
+    | 'strict'   - All patterns active, low confidence threshold. Catches more
+    |              but may produce more false positives.
+    | 'balanced' - Default behavior. Confidence scoring active, standard thresholds.
+    | 'relaxed'  - Only high-severity patterns trigger. Higher confidence threshold.
+    |              Best for content-heavy sites that experience many false positives.
+    |
+    */
+    'detection_mode' => env('THREAT_DETECTION_MODE', 'balanced'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Context Weights
+    |--------------------------------------------------------------------------
+    |
+    | Weight multipliers for where a pattern match was found in the request.
+    | Higher weight = more suspicious. Used in confidence scoring.
+    |
+    */
+    'context_weights' => [
+        'query'   => 1.5,   // Patterns in query strings are most suspicious
+        'headers' => 1.3,   // Patterns in headers are suspicious
+        'body'    => 1.0,   // POST body is baseline (often contains legitimate content)
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Notifications
     |--------------------------------------------------------------------------
     |
