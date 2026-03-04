@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\Facade;
 /**
  * @method static void detectAndLogFromRequest(\Illuminate\Http\Request $request)
  * @method static array detectThreatPatterns(string $payload, string $source = 'default', bool $isAuthPath = false)
+ * @method static array detectThreatPatternsWithContext(array $segments, string $source = 'default', bool $isAuthPath = false)
  * @method static array getDefaultThreatPatterns()
  * @method static array getIpStatistics(string $ip)
  * @method static array detectCoordinatedAttacks(int $timeWindowMinutes = 15, int $minIpCount = 3)
