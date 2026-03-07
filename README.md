@@ -1,6 +1,6 @@
 <p align="center">
   <img src="https://img.shields.io/packagist/v/jayanta/laravel-threat-detection.svg?style=flat-square" alt="Latest Version">
-  <img src="https://img.shields.io/github/actions/workflow/status/jay123anta/laravel-honeypot/tests.yml?branch=main&style=flat-square&label=tests" alt="Tests">
+  <img src="https://img.shields.io/github/actions/workflow/status/jay123anta/laravel-threat-detection/tests.yml?branch=main&style=flat-square&label=tests" alt="Tests">
   <img src="https://img.shields.io/packagist/dt/jayanta/laravel-threat-detection.svg?style=flat-square" alt="Total Downloads">
   <img src="https://img.shields.io/packagist/l/jayanta/laravel-threat-detection.svg?style=flat-square" alt="License">
   <img src="https://img.shields.io/php-version-support/jayanta/laravel-threat-detection?style=flat-square" alt="PHP Version">
