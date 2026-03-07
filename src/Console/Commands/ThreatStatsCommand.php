@@ -15,7 +15,14 @@ class ThreatStatsCommand extends Command
     {
         $table = config('threat-detection.table_name', 'threat_logs');
 
-        $total = DB::table($table)->count();
+        try {
+            $total = DB::table($table)->count();
+        } catch (\Throwable $e) {
+            $this->error("Could not query the '{$table}' table. Have you run the migrations?");
+            $this->line('  Run: php artisan vendor:publish --tag=threat-detection-migrations && php artisan migrate');
+            return 1;
+        }
+
         $high = DB::table($table)->where('threat_level', 'high')->count();
         $medium = DB::table($table)->where('threat_level', 'medium')->count();
         $low = DB::table($table)->where('threat_level', 'low')->count();

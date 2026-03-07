@@ -135,7 +135,7 @@ return [
     |
     */
     'threat_levels' => [
-        'high' => ['XSS', 'SQL Injection', 'RCE', 'Aadhaar', 'PAN', 'Bank', 'Token', 'Password', 'JWT', 'Deserialization', 'Metadata Access'],
+        'high' => ['XSS', 'SQL Injection', 'RCE', 'Aadhaar', 'PAN', 'Bank', 'Token', 'Password', 'JWT', 'Deserialization', 'Metadata Access', 'Evasion', 'Encoding'],
         'medium' => ['Directory Traversal', 'LFI', 'SSRF', 'Sensitive', 'Config', 'Session', 'Command Chain', 'Recon Tool', 'Raw PHP'],
         'low' => ['User-Agent', 'JS Redirect', 'SEO Bot', 'Empty', 'Rate', 'Command-line Downloader'],
     ],
@@ -258,7 +258,7 @@ return [
         // Code Injection
         '/<\?php/i' => 'Raw PHP Code Detected',
         '/\{\{[^}]+\}\}/' => 'Blade/Liquid Template Injection',
-        '/<%(=)?\s*.+\s*%>/s' => 'JSP/ASP Template Injection',
+        '/<%(=)?\s*.{1,500}\s*%>/s' => 'JSP/ASP Template Injection',
         '/\$\{[^}]+\}/i' => 'Expression Language Injection',
 
         // XXE (XML External Entity)
@@ -270,10 +270,9 @@ return [
         '/\$\{jndi:/i' => 'JNDI Injection Attempt',
 
         // SSRF & DNS Rebinding
-        '/(localhost|127\.0\.0\.1|::1|0\.0\.0\.0)(:\d+)?\b/i' => 'Localhost SSRF',
         '/169\.254\.169\.254/i' => 'AWS Metadata SSRF',
         '/metadata\.google\.internal/i' => 'GCP Metadata SSRF',
-        '/(10|172\.16|192\.168)\.\d+\.\d+/i' => 'Private IP Access',
+        '/(10|172\.(1[6-9]|2[0-9]|3[01])|192\.168)\.\d+\.\d+/i' => 'Private IP Access',
 
         // SQL Injection Variants
         '/\b(select|union|drop)\b\s+\*?\s*\bfrom\b\s+\w+/i' => 'SQLi Variant',
@@ -304,7 +303,7 @@ return [
         // API Abuse
         '/\b(v1|v2|v3)\/users\/\d+/i' => 'API User Enumeration',
         '/\/api\/.*\?.*limit=\d{3,}/i' => 'API High Limit Request',
-        '/\/graphql.*\{.*\}/is' => 'GraphQL Query Detected',
+        '/\/graphql.{0,200}\{.{0,1000}\}/is' => 'GraphQL Query Detected',
 
         // IDOR (Insecure Direct Object Reference)
         '/\/user(s)?\/\d+\/delete/i' => 'User Deletion Attempt',

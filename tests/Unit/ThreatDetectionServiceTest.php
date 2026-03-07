@@ -146,4 +146,63 @@ class ThreatDetectionServiceTest extends TestCase
             'threat_level' => 'high',
         ]);
     }
+
+    // ── Evasion Resistance Tests ──
+
+    /** @test */
+    public function it_detects_sql_comment_evasion(): void
+    {
+        $segments = ['query' => 'UNION/**/SELECT'];
+        $matches = $this->service->detectThreatPatternsWithContext($segments);
+
+        $labels = array_column($matches, 'label');
+        $this->assertContains('SQL Comment Evasion', $labels);
+    }
+
+    /** @test */
+    public function it_detects_sql_char_encoding(): void
+    {
+        $segments = ['query' => "CHAR(39)"];
+        $matches = $this->service->detectThreatPatternsWithContext($segments);
+
+        $labels = array_column($matches, 'label');
+        $this->assertContains('SQL Injection CHAR Encoding', $labels);
+    }
+
+    /** @test */
+    public function it_detects_double_url_encoding(): void
+    {
+        $segments = ['query' => '%2527'];
+        $matches = $this->service->detectThreatPatternsWithContext($segments);
+
+        $labels = array_column($matches, 'label');
+        $this->assertContains('Double URL Encoding', $labels);
+    }
+
+    /** @test */
+    public function it_catches_obfuscated_sql_after_normalization(): void
+    {
+        $segments = ['query' => 'UNION/**/SELECT'];
+        $matches = $this->service->detectThreatPatternsWithContext($segments);
+
+        $labels = array_column($matches, 'label');
+        // Normalization strips /**/ → "UNION SELECT" which triggers the SQL pattern
+        $this->assertContains('SQL Injection UNION', $labels);
+    }
+
+    /** @test */
+    public function it_does_not_false_positive_on_double_dash(): void
+    {
+        $segments = ['body' => 'font--bold'];
+        $matches = $this->service->detectThreatPatternsWithContext($segments);
+
+        $labels = array_column($matches, 'label');
+        $this->assertNotContains('SQL Comment Syntax', $labels);
+
+        $segments2 = ['query' => '--verbose'];
+        $matches2 = $this->service->detectThreatPatternsWithContext($segments2);
+
+        $labels2 = array_column($matches2, 'label');
+        $this->assertNotContains('SQL Comment Syntax', $labels2);
+    }
 }

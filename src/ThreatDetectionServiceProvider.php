@@ -97,8 +97,16 @@ class ThreatDetectionServiceProvider extends ServiceProvider
      */
     protected function registerRoutes(): void
     {
-        // Register API routes if enabled
+        // Register API routes if enabled (skip auth:sanctum if Sanctum is not installed)
         if (config('threat-detection.api.enabled', true)) {
+            $middleware = config('threat-detection.api.middleware', ['api', 'auth:sanctum']);
+
+            if (!class_exists(\Laravel\Sanctum\SanctumServiceProvider::class)) {
+                $middleware = array_values(array_filter($middleware, fn($m) => $m !== 'auth:sanctum'));
+            }
+
+            config(['threat-detection.api.middleware' => $middleware]);
+
             $this->loadRoutesFrom(__DIR__ . '/../routes/api.php');
         }
 

@@ -183,6 +183,34 @@ class ThreatDetectionService
     }
 
     /**
+     * Normalize payload to defeat common evasion techniques.
+     * Strips SQL inline comments and collapses whitespace.
+     * Idempotent: clean input passes through unchanged.
+     */
+    private function normalizeForDetection(string $payload): string
+    {
+        // Strip SQL inline comments: /* ... */ → space
+        $normalized = preg_replace('/\/\*.*?\*\//s', ' ', $payload);
+
+        // Collapse multiple whitespace to single space
+        $normalized = preg_replace('/\s+/', ' ', $normalized);
+
+        return trim($normalized);
+    }
+
+    /**
+     * Evasion-specific patterns that run on RAW (un-normalized) payloads.
+     * Detects deliberate obfuscation attempts — always high severity.
+     */
+    private function getEvasionPatterns(): array
+    {
+        return [
+            '/\w+\/\*[^*]*\*\/\w+/' => 'SQL Comment Evasion',
+            '/%25[0-9a-fA-F]{2}/i' => 'Double URL Encoding',
+        ];
+    }
+
+    /**
      * Detect threats with context metadata for each match.
      */
     public function detectThreatPatternsWithContext(
@@ -204,6 +232,25 @@ class ThreatDetectionService
                 continue;
             }
 
+            // Cap payload size to prevent ReDoS on extremely large inputs
+            $segmentPayload = substr($segmentPayload, 0, 8000);
+
+            // Step 1: Run evasion patterns on RAW payload (before normalization)
+            foreach ($this->getEvasionPatterns() as $regex => $label) {
+                if (@preg_match($regex, $segmentPayload)) {
+                    $matches[] = [
+                        'label' => $label,
+                        'threat_level' => 'high',
+                        'source' => $source,
+                        'context' => $context,
+                    ];
+                }
+            }
+
+            // Step 2: Normalize payload to defeat evasion techniques
+            $normalizedPayload = $this->normalizeForDetection($segmentPayload);
+
+            // Step 3: Run default + custom patterns on NORMALIZED payload
             foreach ($this->getDefaultThreatPatterns() as $regex => $label) {
                 $level = $this->getThreatLevelByType($label);
 
@@ -212,7 +259,7 @@ class ThreatDetectionService
                     continue;
                 }
 
-                if (@preg_match($regex, $segmentPayload)) {
+                if (@preg_match($regex, $normalizedPayload)) {
                     $matches[] = [
                         'label' => $label,
                         'threat_level' => $level,
@@ -233,7 +280,12 @@ class ThreatDetectionService
                     continue;
                 }
 
-                if (@preg_match($regex, $segmentPayload)) {
+                $result = @preg_match($regex, $normalizedPayload);
+                if ($result === false) {
+                    Log::warning("Threat detection: invalid custom pattern skipped: {$regex}");
+                    continue;
+                }
+                if ($result) {
                     $matches[] = [
                         'label' => $label,
                         'threat_level' => $level,
@@ -315,8 +367,8 @@ class ThreatDetectionService
             '/\bselect\b\s+.+?\s+\bfrom\b/i' => 'SQL SELECT Query',
             '/\b(or|and)\b\s+["\']?\d+["\']?\s*=\s*["\']?\d+["\']?/i' => 'SQL Boolean Check',
             '/\bexec(?:ute)?\b\s*\(/i' => 'SQL exec()',
-            '/(--|\#|\/\*)/' => 'SQL Comment Syntax',
             '/\b(information_schema|pg_catalog|mysql\.|sysobjects)\b/i' => 'SQL Metadata Probe',
+            '/\bCHAR\s*\(\s*\d+/i' => 'SQL Injection CHAR Encoding',
 
             '/\bbase64_decode\s*\(/i' => 'RCE base64 Decode',
             '/\b(system|shell_exec|exec|passthru|proc_open|popen)\s*\(/i' => 'RCE Shell Function',
@@ -324,9 +376,9 @@ class ThreatDetectionService
             '/\b(include|require)(_once)?\s*\(?\s*[\'"]?.+?\.(php|inc)[\'"]?\s*\)?/i' => 'File Inclusion',
 
             '/\.\.(\/|\\\\)/' => 'Directory Traversal',
-            '/\b(file|php|zip|data|glob):\/\//i' => 'LFI Protocol Usage',
+            '/\b(file|php|zip|data|glob|phar|expect|input):\/\//i' => 'LFI Protocol Usage',
             '/\/etc\/passwd|\/proc\/self\/environ|c:\\\\windows\\\\win\.ini/i' => 'Sensitive File Access',
-            '/(localhost|127\.0\.0\.1|::1)(:\d+)?\b/i' => 'Localhost SSRF',
+            '/(localhost|127\.0\.0\.1|0\.0\.0\.0|::1)(:\d+)?\b/i' => 'Localhost SSRF',
 
             '/(?<![a-z0-9])(?:;|&&|\|\|)(?![a-z0-9])/i' => 'Command Chain Injection',
             '/\b(curl|wget)\s+["\']?https?:\/\//i' => 'Command Downloader',
@@ -334,7 +386,7 @@ class ThreatDetectionService
             '/eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}/' => 'JWT Token Found',
             '/csrf[_-]?token\s*=\s*["\']?[a-z0-9\-_]{32,}/i' => 'CSRF Token Reference',
 
-            '/O:\d+:"[A-Za-z_][A-Za-z0-9_]+":\d+:\{.*\}/s' => 'PHP Object Deserialization',
+            '/O:\d+:"[A-Za-z_][A-Za-z0-9_]+":\d+:\{.{0,500}\}/s' => 'PHP Object Deserialization',
 
             '/\b(nmap|sqlmap|nikto|acunetix|wpscan|dirbuster|fimap)\b/i' => 'Scanner Tool Detected',
         ];
@@ -365,7 +417,12 @@ class ThreatDetectionService
         ];
 
         foreach (config('threat-detection.custom_patterns', []) as $regex => $label) {
-            if (@preg_match($regex, $payload)) {
+            $result = @preg_match($regex, $payload);
+            if ($result === false) {
+                Log::warning("Threat detection: invalid custom pattern skipped: {$regex}");
+                continue;
+            }
+            if ($result) {
                 if ($isAuthPath && in_array($label, $authExcludePatterns)) {
                     continue;
                 }
@@ -443,17 +500,26 @@ class ThreatDetectionService
     private function sendNotifications(string $ip, string $url, string $type, string $level, string $userAgent): void
     {
         try {
-            // Slack notification
-            if (config('threat-detection.notifications.slack_webhook')) {
-                Notification::route('slack', config('threat-detection.notifications.slack_webhook'))
-                    ->notify(new ThreatAlertSlack([
-                        'ip_address' => $ip,
-                        'url' => $url,
-                        'type' => $type,
-                        'threat_level' => $level,
-                        'action_taken' => 'logged',
-                        'user_agent' => $userAgent,
-                    ]));
+            $webhookUrl = config('threat-detection.notifications.slack_webhook');
+            if (!$webhookUrl) {
+                return;
+            }
+
+            $alert = new ThreatAlertSlack([
+                'ip_address' => $ip,
+                'url' => $url,
+                'type' => $type,
+                'threat_level' => $level,
+                'action_taken' => 'logged',
+                'user_agent' => $userAgent,
+            ]);
+
+            // Laravel 10: use built-in Slack notification channel
+            if (class_exists(\Illuminate\Notifications\Messages\SlackMessage::class)) {
+                Notification::route('slack', $webhookUrl)->notify($alert);
+            } else {
+                // Laravel 11+ or no Slack package: send via HTTP webhook directly
+                \Illuminate\Support\Facades\Http::post($webhookUrl, $alert->toWebhookPayload());
             }
         } catch (\Throwable $e) {
             Log::error('Failed to send threat notification: ' . $e->getMessage());
