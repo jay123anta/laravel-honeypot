@@ -12,7 +12,7 @@
         "ddos",
         "waf"
     ],
-    "homepage": "https://github.com/jay123anta/laravel-honeypot",
+    "homepage": "https://github.com/jay123anta/laravel-threat-detection",
     "license": "MIT",
     "type": "library",
     "authors": [
