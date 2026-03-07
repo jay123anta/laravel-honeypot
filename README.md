@@ -98,6 +98,115 @@ protected $middlewareGroups = [
 
 ---
 
+## Testing in Development
+
+After installation, the package works silently — it logs threats to the database but never blocks requests. Here's how to verify it's working.
+
+### Step 1: Start your app
+
+```bash
+php artisan serve
+```
+
+> **Important:** Do NOT add `THREAT_DETECTION_WHITELISTED_IPS=127.0.0.1` to your `.env` during testing. This would whitelist your local IP and skip all detection. The whitelist is empty by default.
+
+### Step 2: Trigger test threats from your browser
+
+Open your browser and append malicious query parameters to **any existing route** in your app (e.g., your homepage). Replace `http://localhost:8000` with your actual local URL.
+
+**SQL Injection:**
+```
+http://localhost:8000/?q=' UNION SELECT * FROM users--
+```
+
+**XSS (Cross-Site Scripting):**
+```
+http://localhost:8000/?q=<script>alert(1)</script>
+```
+
+**Directory Traversal:**
+```
+http://localhost:8000/?file=../../etc/passwd
+```
+
+**RCE (Remote Code Execution):**
+```
+http://localhost:8000/?cmd=system('ls -la')
+```
+
+> **Use your app's real routes** (homepage `/`, a product page, etc.). Made-up URLs like `/any-page` may return a 404 without going through the middleware.
+
+### Step 3: Verify threats were logged
+
+**Option A — Artisan command (easiest):**
+```bash
+php artisan threat-detection:stats
+```
+You should see a table with `Total Threats`, severity counts, and top IPs.
+
+**Option B — Database query via Tinker:**
+```bash
+php artisan tinker
+```
+```php
+DB::table('threat_logs')->latest()->take(5)->get(['ip_address', 'type', 'threat_level', 'confidence_score']);
+```
+
+**Option C — Check your Laravel log:**
+Each detected threat is logged as a warning:
+```
+[high] Threat Detected: [middleware] SQL Injection UNION from 127.0.0.1 (http://localhost:8000/?q=...) [confidence: 50%]
+```
+
+### Step 4: View the API (optional)
+
+The API uses `auth:sanctum` by default. For quick local testing, temporarily change the middleware in `config/threat-detection.php`:
+
+```php
+'api' => [
+    'enabled' => true,
+    'prefix' => 'api/threat-detection',
+    'middleware' => ['api'],  // temporarily remove 'auth:sanctum'
+],
+```
+
+Then visit:
+- `http://localhost:8000/api/threat-detection/stats` — overall statistics
+- `http://localhost:8000/api/threat-detection/threats` — paginated threat list
+
+> **Remember to restore `['api', 'auth:sanctum']` before deploying to production.**
+
+### Step 5: View the Dashboard (optional)
+
+Add to your `.env`:
+```env
+THREAT_DETECTION_DASHBOARD=true
+```
+
+The dashboard is at `http://localhost:8000/threat-detection`. It requires login by default (`['web', 'auth']` middleware). If your app doesn't have authentication set up yet, temporarily change in `config/threat-detection.php`:
+
+```php
+'dashboard' => [
+    'enabled' => true,
+    'path' => 'threat-detection',
+    'middleware' => ['web'],  // temporarily remove 'auth'
+],
+```
+
+> **Restore `['web', 'auth']` before deploying to production.**
+
+### Things to know when testing
+
+| Behavior | Explanation |
+|----------|-------------|
+| Same threat only logs once per 5 minutes | The package deduplicates: same IP + same threat type is cached for 5 minutes. **Use different attack types** for each test, or wait 5 minutes between tests. |
+| `curl` requests trigger extra detection | Using `curl` to test will also log a "cURL Command" user-agent detection (low severity). This is expected — the package detects automated tools. |
+| The package never blocks requests | It only logs and alerts. Your app continues to function normally. |
+| No Slack setup needed | Notifications are off by default. You don't need Slack to use the package. |
+| No internet connection needed | Core detection is 100% local. Only the optional `php artisan threat-detection:enrich` command calls an external API (ip-api.com) for geo-data. |
+
+---
+
 ## Features
 
 - **40+ Attack Patterns** — SQL injection, XSS, RCE, directory traversal, SSRF, XXE, Log4Shell, and more
@@ -132,8 +241,9 @@ THREAT_DETECTION_ENABLED=true
 # Detection sensitivity: strict, balanced (default), relaxed
 THREAT_DETECTION_MODE=balanced
 
-# Whitelist IPs (comma-separated, supports CIDR)
-THREAT_DETECTION_WHITELISTED_IPS=127.0.0.1,10.0.0.0/8
+# Whitelist IPs (comma-separated, supports CIDR) — empty by default
+# Example: THREAT_DETECTION_WHITELISTED_IPS=10.0.0.0/8,192.168.1.0/24
+THREAT_DETECTION_WHITELISTED_IPS=
 
 # DDoS thresholds
 THREAT_DETECTION_DDOS_THRESHOLD=300

@@ -146,7 +146,7 @@ class ThreatDetectionService
         }
 
         $headers = collect($request->headers->all())
-            ->except(['cookie', 'x-xsrf-token', 'accept-language', 'accept-encoding', 'connection', 'host'])
+            ->except(['cookie', 'x-xsrf-token', 'accept-language', 'accept-encoding', 'connection', 'host', 'referer', 'origin'])
             ->map(fn($v) => is_array($v) ? implode('; ', array_slice($v, 0, 2)) : $v);
 
         if ($headers->isNotEmpty()) {
@@ -172,7 +172,7 @@ class ThreatDetectionService
         }
 
         $headers = collect($request->headers->all())
-            ->except(['cookie', 'x-xsrf-token', 'accept-language', 'accept-encoding', 'connection', 'host'])
+            ->except(['cookie', 'x-xsrf-token', 'accept-language', 'accept-encoding', 'connection', 'host', 'referer', 'origin'])
             ->map(fn($v) => is_array($v) ? implode('; ', array_slice($v, 0, 2)) : $v);
 
         if ($headers->isNotEmpty()) {
