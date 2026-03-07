@@ -205,6 +205,38 @@ The dashboard is at `http://localhost:8000/threat-detection`. It requires login 
 | No Slack setup needed | Notifications are off by default. You don't need Slack to use the package. |
 | No internet connection needed | Core detection is 100% local. Only the optional `php artisan threat-detection:enrich` command calls an external API (ip-api.com) for geo-data. |
 
+### Troubleshooting
+
+**"I tested but `threat-detection:stats` shows zero threats"**
+
+| Check | How to verify |
+|-------|---------------|
+| Migrations were run | Run `php artisan migrate:status` — look for `threat_logs` and `threat_exclusion_rules` tables marked as "Ran" |
+| Middleware is registered | Verify the `ThreatDetectionMiddleware` class is in your `web` middleware group — see [Quick Start](#quick-start) |
+| IP is not whitelisted | Check `.env` — `THREAT_DETECTION_WHITELISTED_IPS` should be empty or not set during testing |
+| Environment is correct | Check `APP_ENV` in `.env` — must be `local`, `staging`, or `production` (the default enabled environments) |
+| Used an existing route | The test URL must match a real route in your app (e.g., `/`). 404 pages may not go through the web middleware |
+| Dedup cache | Same IP + same attack type logs only once per 5 minutes. Try a different attack type |
+
+**"`threat-detection:stats` throws a database error"**
+
+The `threat_logs` table doesn't exist. Run:
+```bash
+php artisan vendor:publish --tag=threat-detection-migrations
+php artisan migrate
+```
+
+**"API returns 401 Unauthorized"**
+
+The API uses `auth:sanctum` by default. See [Step 4](#step-4-view-the-api-optional) above to temporarily disable auth for local testing.
+
+**"Dashboard shows 404"**
+
+Add `THREAT_DETECTION_DASHBOARD=true` to your `.env` file and clear the route cache:
+```bash
+php artisan route:clear
+```
+
 ---
 
 ## Features
@@ -232,31 +264,27 @@ The dashboard is at `http://localhost:8000/threat-detection`. It requires login 
 
 ## Configuration
 
-Add to your `.env` file:
+The package works out of the box with sensible defaults. **No `.env` changes are required for basic usage.** Add any of these to your `.env` only if you want to override the defaults:
 
 ```env
-# Core
+# Core (both default to true/balanced — no need to add unless changing)
 THREAT_DETECTION_ENABLED=true
+THREAT_DETECTION_MODE=balanced              # Options: strict, balanced, relaxed
 
-# Detection sensitivity: strict, balanced (default), relaxed
-THREAT_DETECTION_MODE=balanced
+# Whitelist IPs — empty by default. Add IPs to SKIP detection for.
+# THREAT_DETECTION_WHITELISTED_IPS=10.0.0.0/8,192.168.1.0/24
 
-# Whitelist IPs (comma-separated, supports CIDR) — empty by default
-# Example: THREAT_DETECTION_WHITELISTED_IPS=10.0.0.0/8,192.168.1.0/24
-THREAT_DETECTION_WHITELISTED_IPS=
+# DDoS thresholds (defaults shown — only add if changing)
+# THREAT_DETECTION_DDOS_THRESHOLD=300
+# THREAT_DETECTION_DDOS_WINDOW=60
 
-# DDoS thresholds
-THREAT_DETECTION_DDOS_THRESHOLD=300
-THREAT_DETECTION_DDOS_WINDOW=60
+# Slack notifications (disabled by default — enable only if you use Slack)
+# THREAT_DETECTION_NOTIFICATIONS=true
+# THREAT_DETECTION_SLACK_WEBHOOK=https://hooks.slack.com/services/...
+# THREAT_DETECTION_SLACK_CHANNEL=#threat-alerts
 
-# Notifications
-THREAT_DETECTION_NOTIFICATIONS=false
-THREAT_DETECTION_SLACK_WEBHOOK=https://hooks.slack.com/services/...
-THREAT_DETECTION_SLACK_CHANNEL=#threat-alerts
-
-# API & Dashboard
-THREAT_DETECTION_API=true
-THREAT_DETECTION_DASHBOARD=true
+# Dashboard (disabled by default — enable when ready)
+# THREAT_DETECTION_DASHBOARD=true
 ```
 
 ### Slack Notifications (Laravel 10.13+)
@@ -493,7 +521,9 @@ Uses the free [ip-api.com](http://ip-api.com) service (HTTP, rate-limited to 45 
 
 ---
 
-## Testing
+## Running the Test Suite
+
+For contributors and development:
 
 ```bash
 composer test
