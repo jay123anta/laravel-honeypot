@@ -191,19 +191,48 @@ class SupportMatrixTest extends TestCase
     /**
      * Which branch this run exercises. Recorded explicitly so a green suite
      * cannot be mistaken for "both branches pass".
+     *
+     * This used to predict the answer from the Laravel major: "10 ships
+     * SlackMessage, 11+ does not." That prediction is wrong, and it was
+     * failing the Laravel 10 leg — silently, because that leg is
+     * `continue-on-error`. `laravel/framework:10.*` resolves to 10.50.x,
+     * which does **not** ship `Illuminate\Notifications\Messages\SlackMessage`;
+     * the class is only present if `laravel/slack-notification-channel` is
+     * installed, and this package merely suggests it.
+     *
+     * So the prediction is gone. What is asserted instead is the thing that
+     * has to hold on every leg: the package's behaviour follows whether the
+     * class is actually there, never which major it is running on.
      */
     #[Test]
-    public function the_slack_branch_under_test_is_the_one_this_laravel_version_selects(): void
+    public function the_slack_branch_under_test_is_the_one_the_installed_packages_select(): void
     {
-        $laravel = (int) explode('.', app()->version())[0];
         $hasSlackMessage = class_exists(SlackMessage::class);
+        $via = (new ThreatAlertSlack($this->alertData()))->via(null);
 
-        // Laravel 10 ships SlackMessage in illuminate/notifications; 11
-        // extracted it to laravel/slack-notification-channel, which this
-        // package only suggests.
-        $laravel <= 10
-            ? $this->assertTrue($hasSlackMessage, 'Laravel 10 should ship SlackMessage')
-            : $this->assertFalse($hasSlackMessage, 'SlackMessage exists on Laravel 11+, so slack-notification-channel is installed');
+        $hasSlackMessage
+            ? $this->assertSame(['slack'], $via, 'SlackMessage is installed but the notification will not route to it')
+            : $this->assertSame([], $via, 'SlackMessage is absent, so claiming the slack channel would be a fatal');
+    }
+
+    /**
+     * And the consequence, stated so it is not rediscovered: on every
+     * combination this matrix installs, `toSlack()` is unreachable. The
+     * webhook branch is the one every user gets unless they install
+     * `laravel/slack-notification-channel` themselves.
+     */
+    #[Test]
+    public function the_slack_message_branch_is_unreachable_without_the_optional_channel_package(): void
+    {
+        if (class_exists(SlackMessage::class)) {
+            $this->markTestSkipped('slack-notification-channel is installed on this run, so the SlackMessage branch is live');
+        }
+
+        $this->assertSame(
+            [],
+            (new ThreatAlertSlack($this->alertData()))->via(null),
+            'toSlack() would be called with no SlackMessage class present, which is a fatal'
+        );
     }
 
     #[Test]

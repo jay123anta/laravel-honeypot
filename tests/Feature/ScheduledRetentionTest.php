@@ -3,6 +3,7 @@
 namespace JayAnta\ThreatDetection\Tests\Feature;
 
 use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Contracts\Console\Kernel;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use JayAnta\ThreatDetection\Tests\TestCase;
@@ -32,6 +33,24 @@ class ScheduledRetentionTest extends TestCase
         if ($this->retentionOverride !== []) {
             $app['config']->set('threat-detection.retention', $this->retentionOverride);
         }
+
+        /*
+         * Resolve the console kernel before the application boots, which is
+         * what `artisan` itself does and what makes this test faithful.
+         *
+         * Constructing the kernel is what binds Schedule::class as a
+         * singleton. The provider registers its event from an app->booted()
+         * callback; if nothing has bound Schedule by then, the container
+         * hands out a fresh throwaway instance, the event lands in it, and
+         * the kernel later installs the real singleton with nothing in it.
+         *
+         * Testbench 11 happens to construct the kernel early, so this was
+         * invisible on Laravel 13. On Testbench 8 / Laravel 10 it is not, and
+         * every assertion about a registered event failed. The product is
+         * fine on both — a real console run always constructs the kernel
+         * first — so the ordering is corrected here rather than in src.
+         */
+        $app->make(Kernel::class);
     }
 
     private function withRetention(array $retention): void
