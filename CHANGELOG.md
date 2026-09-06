@@ -2,7 +2,7 @@
 
 All notable changes to `jayanta/laravel-threat-detection` will be documented in this file.
 
-## [Unreleased]
+## [1.8.0] - 2026-09-06
 
 Three audits, in sequence: a full audit of the test suite, a second audit of
 the fixes that came out of it, and a security audit treating the package as an
