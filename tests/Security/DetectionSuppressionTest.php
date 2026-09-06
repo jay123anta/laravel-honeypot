@@ -243,21 +243,61 @@ class DetectionSuppressionTest extends TestCase
     {
         config(['threat-detection.max_detections_per_request' => 3]);
 
-        // Three low-severity matches that appear early in the pattern list,
-        // then the payload that matters.
+        // Three *low*-severity matches, then the payload that matters. The
+        // padding has to be low severity for this to be a question about
+        // ordering at all — when everything competing is high, the cap simply
+        // keeps the first ones and nothing can do better. That case is pinned
+        // separately below.
         $this->post('/s', [
-            'a' => 'document.cookie',
-            'b' => 'alert(1)',
-            'c' => 'eval(1)',
-            'd' => '<script>x</script>',
-            'e' => self::SQLI,
+            'a' => '{{ 1 }}',
+            'b' => '${price}',
+            'c' => 'trace_id',
+            'd' => self::SQLI,
         ], ['User-Agent' => self::BROWSER])->assertStatus(200);
 
         $this->assertContains(
             '[middleware] SQL Injection UNION',
             $this->types(),
-            'the cap was filled by earlier matches and the injection went unrecorded: ' . implode(', ', $this->types())
+            'the cap was filled by lower-severity matches and the injection went unrecorded: ' . implode(', ', $this->types())
         );
+    }
+
+    /** The cap is still a cap: it bounds what is reported. */
+    #[Test]
+    public function the_cap_still_limits_how_many_detections_are_recorded(): void
+    {
+        config(['threat-detection.max_detections_per_request' => 3]);
+
+        $this->post('/s', [
+            'a' => '{{ 1 }}',
+            'b' => '${price}',
+            'c' => 'trace_id',
+            'd' => self::SQLI,
+            'e' => '<script>alert(1)</script>',
+        ], ['User-Agent' => self::BROWSER])->assertStatus(200);
+
+        $this->assertLessThanOrEqual(3, DB::table('threat_logs')->count());
+    }
+
+    /**
+     * When every competing match is the same severity the cap keeps the first
+     * ones found, which is all it can do. Pinned so the fix is not mistaken
+     * for a guarantee that the "most interesting" match always survives.
+     */
+    #[Test]
+    public function a_cap_full_of_equally_severe_matches_keeps_the_ones_found_first(): void
+    {
+        config(['threat-detection.max_detections_per_request' => 2]);
+
+        $this->post('/s', [
+            'a' => '<script>alert(1)</script>',
+            'b' => self::SQLI,
+        ], ['User-Agent' => self::BROWSER])->assertStatus(200);
+
+        $levels = DB::table('threat_logs')->distinct()->pluck('threat_level')->all();
+
+        $this->assertSame(['high'], $levels);
+        $this->assertLessThanOrEqual(2, DB::table('threat_logs')->count());
     }
 
     // ── the exclusion rules an attacker would like to create ───────────────

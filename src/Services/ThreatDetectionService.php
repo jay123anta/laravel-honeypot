@@ -1467,7 +1467,7 @@ class ThreatDetectionService
             // every other pattern would duplicate the decoded segments.
             if ($context === 'raw') {
                 foreach ($this->getEvasionPatterns() as $regex => $label) {
-                    if ($maxDetections > 0 && count($matches) >= $maxDetections) {
+                    if ($this->capIsUnbeatable($matches, $maxDetections)) {
                         break 2;
                     }
                     if (isset($seenEvasionLabels[$label])) {
@@ -1508,7 +1508,7 @@ class ThreatDetectionService
             // Evasion patterns run on the un-normalized payload
             if ($prescreened) {
                 foreach ($this->getEvasionPatterns() as $regex => $label) {
-                    if ($maxDetections > 0 && count($matches) >= $maxDetections) {
+                    if ($this->capIsUnbeatable($matches, $maxDetections)) {
                         break 2;
                     }
                     if ($this->patternMatches($regex, $segmentPayload, $label)) {
@@ -1530,7 +1530,7 @@ class ThreatDetectionService
             $relevantCategories = $prescreened ? $this->getRelevantCategories($normalizedPayload) : [];
 
             foreach ($this->getDefaultThreatPatterns() as $regex => $label) {
-                if ($maxDetections > 0 && count($matches) >= $maxDetections) {
+                if ($this->capIsUnbeatable($matches, $maxDetections)) {
                     break 2;
                 }
 
@@ -1556,7 +1556,7 @@ class ThreatDetectionService
             }
 
             foreach ($this->getValidatedCustomPatterns() as $regex => $spec) {
-                if ($maxDetections > 0 && count($matches) >= $maxDetections) {
+                if ($this->capIsUnbeatable($matches, $maxDetections)) {
                     break 2;
                 }
 
@@ -1591,7 +1591,70 @@ class ThreatDetectionService
             }
         }
 
-        return $matches;
+        return $this->applySeverityCap($matches, $maxDetections);
+    }
+
+    /**
+     * TD-011. Report the most severe matches, not the first ones found.
+     *
+     * max_detections_per_request stopped the scan as soon as the cap was full,
+     * and patterns are evaluated in list order — so an attacker who padded a
+     * request with cheap matches that sit earlier in that order consumed the
+     * budget before the real payload was reached. With the cap at 3, a request
+     * carrying three XSS matches and a SQL injection recorded the three XSS
+     * matches and not the injection.
+     *
+     * Raising the cap would not fix it; ordering does. The cap now bounds what
+     * is *reported*, and what survives is chosen by severity rather than by
+     * position in the pattern list.
+     *
+     * usort is stable on PHP 8, so matches of equal severity keep the order
+     * they were found in and the output stays deterministic.
+     *
+     * @param  array<int, array{label: string, threat_level: string, source: string, context: string}>  $matches
+     * @return array<int, array{label: string, threat_level: string, source: string, context: string}>
+     */
+    private function applySeverityCap(array $matches, int $maxDetections): array
+    {
+        if ($maxDetections <= 0 || count($matches) <= $maxDetections) {
+            return $matches;
+        }
+
+        $rank = ['high' => 3, 'medium' => 2, 'low' => 1];
+
+        usort(
+            $matches,
+            static fn ($a, $b) => ($rank[$b['threat_level']] ?? 0) <=> ($rank[$a['threat_level']] ?? 0)
+        );
+
+        return array_slice($matches, 0, $maxDetections);
+    }
+
+    /**
+     * Whether scanning further could still change what gets reported.
+     *
+     * Once the cap is filled with high-severity matches nothing found later can
+     * outrank them, so the scan can stop — which keeps the early exit for the
+     * clearly-malicious request the config comment describes, without letting a
+     * padded one decide what is kept.
+     *
+     * @param  array<int, array{threat_level: string}>  $matches
+     */
+    private function capIsUnbeatable(array $matches, int $maxDetections): bool
+    {
+        if ($maxDetections <= 0) {
+            return false;
+        }
+
+        $high = 0;
+
+        foreach ($matches as $match) {
+            if ($match['threat_level'] === 'high' && ++$high >= $maxDetections) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /** @var array<string, bool> Unknown validator names already warned about */
