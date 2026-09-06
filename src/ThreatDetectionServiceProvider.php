@@ -183,7 +183,19 @@ class ThreatDetectionServiceProvider extends ServiceProvider
             $days = (int) config('threat-detection.retention.days', 90);
 
             $schedule = $this->app->make(Schedule::class);
-            $schedule->command("threat-detection:purge --days={$days}")
+
+            /*
+             * TD-016. --no-interaction is not decoration.
+             *
+             * threat-detection:purge asks for confirmation before deleting.
+             * Symfony only marks input non-interactive when --no-interaction
+             * or -n is present — it does not sniff for a TTY — and the
+             * scheduler builds a plain `artisan threat-detection:purge` with
+             * no such flag. Under cron the prompt therefore reads EOF and the
+             * purge cancels itself, every night, silently: retention appears
+             * configured and threat_logs grows without bound.
+             */
+            $schedule->command("threat-detection:purge --days={$days} --no-interaction")
                 ->daily()
                 ->at('02:00')
                 ->withoutOverlapping()
