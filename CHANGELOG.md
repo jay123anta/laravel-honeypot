@@ -4,10 +4,20 @@ All notable changes to `jayanta/laravel-threat-detection` will be documented in 
 
 ## [Unreleased]
 
-Seven defects found by a full audit of the test suite, all of which had been
-shipping, plus five more found by a second audit of the fixes themselves. The
-suite grew from 365 tests to 1,553 in the process; the new tests are the
-regression guards for everything below.
+Three audits, in sequence: a full audit of the test suite, a second audit of
+the fixes that came out of it, and a security audit treating the package as an
+attack surface rather than as a detector. Seven defects from the first, five
+more from the second, and sixteen findings from the third — every one of which
+had been shipping.
+
+The suite grew from 365 tests to 1,854 in the process, and the new tests are
+the regression guards for everything below. Each is a reproduction that was
+confirmed to fail before its fix, with a positive control asserting the good
+case still works, so "the bad case is blocked" cannot be satisfied by blocking
+everything.
+
+Verified on all four supported Laravel majors (10.50.3, 11.56.1, 12.69.1,
+13.30.1).
 
 ### Security
 
@@ -54,6 +64,86 @@ regression guards for everything below.
   masking blind the detector — an attack delivered *through* a password field
   is still detected, because scanning happens before masking. That is the
   distinction from `safe_fields`, which stops the field being scanned at all.
+- **Command and config injection in the blocklist and fail2ban exports.**
+  `ip_address` was interpolated unescaped into generated nginx and apache
+  directives and into a `#!/bin/bash` script an operator runs as root, so a
+  newline in that column became a new directive or a new command, and a
+  `$(...)` became a substitution at run time.
+
+  Symfony validates `$request->ip()`, which is what kept this out of reach from
+  an ordinary request — but that is a guarantee made in a dependency, for one
+  write path, and these commands asserted nothing about a value they were
+  turning into root-consumed configuration. Every emission site now validates
+  before writing: six across the two export commands plus the API CSV export.
+  A row whose `ip_address` is not an address is skipped and logged, so a
+  blocklist that loses entries says so.
+
+  This also closes two directives that were valid but catastrophic:
+  `deny 0.0.0.0/0;` (an empty column produced a rule denying every address) and
+  `deny ;`.
+
+  Not closed by this, and worth knowing: an application that trusts proxies
+  still lets a client choose *which valid* address is recorded, so an attacker
+  can nominate a third party and have your generated rules ban them. That value
+  is a well-formed IP and no validation can catch it — it belongs to your
+  `TrustProxies` configuration.
+
+- **Write endpoints accepted cross-origin cookie-authenticated requests.**
+  Marking a detection a false positive, and deleting an exclusion rule, could
+  be driven from any page an authenticated administrator happened to visit.
+  Deleting an exclusion rule leaves no record, so the damage was silent.
+
+  Both now require a CSRF token when the request is authenticated by session.
+  `_token`, `X-CSRF-TOKEN` and the encrypted `X-XSRF-TOKEN` are all accepted,
+  the last because axios-based SPAs send only that. Token-authenticated clients
+  are unaffected — enforcement is conditional on the request actually having a
+  session, so nothing that works today stops working. The routes were not moved
+  into the `web` group.
+
+- **Geo enrichment ran over cleartext HTTP by default.** The endpoint default
+  is now HTTPS, and a failed lookup never retries over HTTP — asserted for both
+  an HTTPS rejection and a TLS connection failure. On-path attackers could
+  previously choose what got written into your `country_name`, `city` and `isp`
+  columns, which are read straight into the dashboard and the CSV export.
+
+  A run in which every lookup failed now exits non-zero instead of reporting
+  success. A *partial* failure still exits 0, and addresses that are private or
+  malformed are skipped rather than counted as failures, so an install whose
+  only traffic is local is not told enrichment failed.
+
+- **Geo responses were stored with no length or type validation.** A hostile or
+  compromised provider could return 300 characters for a 100-character column;
+  on a strict-mode database that raised, and the exception took the whole
+  enrichment run down with it, leaving every later row unenriched. Values are
+  now bounded to the column width on a character boundary, and arrays and
+  objects are discarded rather than coerced.
+
+- **A scanner behind a browser user agent was not identified.** The check read
+  "if it looks like a browser, stop" — so `sqlmap/1.5 (Mozilla/5.0 compatible)`
+  was never compared against the scanner list at all, and appending a browser
+  token to any scanner user agent suppressed the detection entirely. A
+  browser-shaped agent now short-circuits only when it matches nothing on any
+  configured list. The false-positive noise floor is unchanged, verified
+  byte-for-byte against the previous behaviour.
+
+- **`max_detections_per_request` could be filled with noise.** The cap was
+  applied in discovery order, so padding a request with cheap low-severity
+  matches pushed the real attack out of the budget. Matches are now ranked by
+  severity before the cap is applied, and the scan may exit early only once the
+  cap is full of high-severity matches — below that it keeps looking. Equal
+  severities keep discovery order.
+
+- **The CSV sanitizer anchored on the first character only.** A formula behind
+  a leading space, tab or carriage return was not neutralised. Exported CSVs
+  also now carry `Content-Type` protection; see *Changed*.
+
+- **`--jail` was interpolated unquoted into a generated root-run script.** The
+  value comes from the operator's own command line, so this is the mildest item
+  here — but a fail2ban jail name has a known shape and the output is a script
+  run as root. Anything outside `[A-Za-z0-9_-]+` is now refused with an error
+  rather than quoted, because a jail name containing a space or a semicolon is
+  a typo, and quoting it would produce a script that runs happily and bans
+  nothing.
 
 ### Fixed
 
@@ -121,6 +211,36 @@ regression guards for everything below.
   reset, so the "cache driver does not support atomic increment" warning could
   not be emitted again after a config change — which is what `flushCaches()`
   exists for under Octane.
+- **The scheduled retention purge deleted nothing.** `threat-detection:purge`
+  asks for confirmation before deleting. Symfony marks input non-interactive
+  only when `--no-interaction` or `-n` is present — it does not detect the
+  absence of a terminal — and the scheduler built a plain
+  `artisan threat-detection:purge --days=90`. Under cron the prompt was
+  reached, read EOF, and cancelled. Retention appeared configured, ran every
+  night, and removed nothing.
+
+  If you have retention enabled, expect the first run after upgrading to delete
+  a backlog.
+
+### Changed
+
+- `redact.fields` is a new config key and its default lives in code. Publish
+  the config again if you want to customise it.
+- `relaxed` mode's confidence floor is 25, was 40.
+- Blocklist and fail2ban exports skip rows whose `ip_address` is not an
+  address, and refuse a malformed `--jail`.
+- API responses carry `X-Content-Type-Options: nosniff` and a `Referrer-Policy`,
+  so a JSON or CSV response cannot be re-interpreted as HTML by a browser that
+  sniffs.
+- `threat-detection:enrich` defaults to `https://ip-api.com/json` and exits
+  non-zero when every lookup failed. Override with
+  `THREAT_DETECTION_GEO_ENDPOINT`.
+- `threat-detection:stats` reports **Recorded Detections**, not "Total
+  Threats", and states the deduplication window underneath. The dashboard card
+  is relabelled to match. The numbers have not changed — a detection is written
+  once per IP per type per five minutes, and the old label invited them to be
+  read as attempt volume, which they never were. That deduplication is what
+  stops a flood becoming a write per request, so it stays.
 
 ### Notes
 
