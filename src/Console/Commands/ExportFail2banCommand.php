@@ -29,8 +29,16 @@ class ExportFail2banCommand extends Command
         }
 
         $format = $this->option('format');
-        $jail = $this->option('jail');
         $filters = $this->buildFilterDescription();
+
+        $jail = $this->validJailName($this->option('jail'));
+
+        if ($jail === null) {
+            $this->error('Invalid --jail name. A fail2ban jail is letters, digits, hyphens and underscores.');
+            $this->line('  Given: ' . var_export($this->option('jail'), true));
+
+            return 1;
+        }
 
         if ($format === 'plain') {
             $this->outputPlain($ips, $filters);
@@ -39,6 +47,26 @@ class ExportFail2banCommand extends Command
         }
 
         return 0;
+    }
+
+    /**
+     * TD-015. The jail name as given, or null if it is not one.
+     *
+     * This is interpolated into a #!/bin/bash script the operator runs as
+     * root. The value comes from their own command line, so it is not an
+     * attacker input and this is the lowest-severity finding in the audit —
+     * but a fail2ban jail name has a known shape, the output is a root-run
+     * script, and refusing anything else costs nothing.
+     *
+     * Rejected rather than escaped: a jail name containing a space or a
+     * semicolon is a typo, and quoting it would produce a script that runs and
+     * silently bans nothing.
+     */
+    private function validJailName(mixed $jail): ?string
+    {
+        return is_string($jail) && preg_match('/^[A-Za-z0-9_-]+$/', $jail) === 1
+            ? $jail
+            : null;
     }
 
     private function getBlockableIps()
