@@ -2055,37 +2055,87 @@ class ThreatDetectionService
 
     private function detectSuspiciousUserAgent(string $userAgent): array
     {
-        // Short-circuit: standard browsers skip all 70+ checks
         $userAgentLower = strtolower($userAgent);
-        if (str_contains($userAgentLower, 'mozilla/') && str_contains($userAgentLower, 'gecko')) {
-            // Looks like a real browser — only check for headless/automation markers
-            $threats = [];
-            $headlessMarkers = ['headlesschrome', 'phantomjs', 'selenium', 'puppeteer', 'playwright'];
-            foreach ($headlessMarkers as $marker) {
-                if (str_contains($userAgentLower, $marker)) {
-                    $threats[] = [ucfirst($marker) . ' detected', 'medium', 'user-agent'];
-                }
-            }
-            // Still check for scanner UAs that spoof Mozilla (e.g., GPTBot includes Mozilla)
-            $spoofCheckMarkers = ['gptbot', 'claudebot', 'bytespider', 'ahrefsbot', 'semrushbot',
-                'mj12bot', 'dotbot', 'petalbot', 'censys', 'shodan'];
-            foreach ($spoofCheckMarkers as $marker) {
-                if (str_contains($userAgentLower, $marker)) {
-                    // Fall through to full check
-                    return $this->fullUserAgentScan($userAgentLower, $userAgent);
-                }
-            }
 
-            return $threats;
+        /*
+         * TD-009. A user agent claiming to be a browser is checked against the
+         * same list as one that does not.
+         *
+         * This used to short-circuit on "mozilla/" plus "gecko" and then
+         * compare against ten hard-coded names — the AI crawlers — before
+         * giving up. Every other scanner was skipped, so "Mozilla/5.0 (X11;
+         * Linux) Gecko/20100101 sqlmap/1.7.2" was not reported as sqlmap while
+         * the bare "sqlmap/1.7.2" was. The list existed precisely to catch
+         * agents that embed Mozilla; it just held the wrong ten.
+         *
+         * The cheap path is kept, because it is what stops every ordinary
+         * request paying for the full scan — but the thing it now tests is
+         * whether the agent matches *any* known scanner or bot, which is the
+         * same question the full scan asks. A browser matches none of them and
+         * still returns immediately.
+         */
+        if (str_contains($userAgentLower, 'mozilla/') && str_contains($userAgentLower, 'gecko')) {
+            if (!$this->matchesAnyKnownAgent($userAgentLower)) {
+                return [];
+            }
         }
 
         return $this->fullUserAgentScan($userAgentLower, $userAgent);
+    }
+
+    /**
+     * Whether the agent contains any name the scanner or bot lists know about.
+     *
+     * Used by the browser fast path so it asks the same question the full scan
+     * does, rather than a ten-name approximation of it.
+     */
+    private function matchesAnyKnownAgent(string $userAgentLower): bool
+    {
+        $this->primeUserAgentLists();
+
+        foreach (self::$cachedScanners as $pattern => $info) {
+            if (str_contains($userAgentLower, $pattern)) {
+                return true;
+            }
+        }
+
+        foreach (self::$cachedBots as $pattern => $info) {
+            if (str_contains($userAgentLower, $pattern)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function fullUserAgentScan(string $userAgentLower, string $userAgent): array
     {
         $threats = [];
 
+        $this->primeUserAgentLists();
+
+        foreach (self::$cachedScanners as $pattern => $info) {
+            if (str_contains($userAgentLower, $pattern)) {
+                $threats[] = [$info['label'], $info['level'], 'user-agent'];
+            }
+        }
+
+        foreach (self::$cachedBots as $pattern => $info) {
+            if (str_contains($userAgentLower, $pattern)) {
+                $threats[] = [$info['label'], $info['level'], 'user-agent'];
+            }
+        }
+
+        if (empty($userAgent) || $userAgent === 'N/A' || $userAgent === '-') {
+            $threats[] = ['Empty User Agent', 'low', 'user-agent'];
+        }
+
+        return $threats;
+    }
+
+    /** Build the scanner and bot lists once per process. */
+    private function primeUserAgentLists(): void
+    {
         if (self::$cachedScanners === null) {
             self::$cachedScanners = [
                 // Existing scanners
@@ -2165,24 +2215,6 @@ class ThreatDetectionService
                 'playwright' => ['label' => 'Playwright Automation', 'level' => 'medium'],
             ];
         }
-
-        foreach (self::$cachedScanners as $pattern => $info) {
-            if (str_contains($userAgentLower, $pattern)) {
-                $threats[] = [$info['label'], $info['level'], 'user-agent'];
-            }
-        }
-
-        foreach (self::$cachedBots as $pattern => $info) {
-            if (str_contains($userAgentLower, $pattern)) {
-                $threats[] = [$info['label'], $info['level'], 'user-agent'];
-            }
-        }
-
-        if (empty($userAgent) || $userAgent === 'N/A' || $userAgent === '-') {
-            $threats[] = ['Empty User Agent', 'low', 'user-agent'];
-        }
-
-        return $threats;
     }
 
     private function sendNotifications(string $ip, string $url, string $type, string $level, string $userAgent): void
