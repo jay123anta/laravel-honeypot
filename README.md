@@ -39,7 +39,7 @@ geo-enrichment, and fail2ban/blocklist exports. No request is ever blocked. Thin
 security camera, not a lock: it shows you exactly who's probing your routes, how
 often, and with what techniques.
 
-> Extracted from a production app and battle-tested on real traffic. 1,854 tests, no runtime
+> Extracted from a production app and battle-tested on real traffic. 1,857 tests, no runtime
 > dependencies beyond Laravel itself, and no internet connection required for detection.
 >
 > Upgrading? See [UPGRADING.md](UPGRADING.md). Contributing? See [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -103,6 +103,34 @@ geo-blocking — with data your edge layer never sees.
   high-volume, low-effort traffic that makes up most of what actually hits a public
   Laravel app: scanners, recon probes, off-the-shelf injection strings, credential
   sprays. Treat a quiet log as an absence of evidence, not evidence of absence.
+
+### Expect it to flag your own content on day one
+
+An untuned install fires on legitimate content, and you should know that before
+you install rather than after. These are measured, not hypothetical — the suite
+pins this exact list so it cannot drift ([`LegitimateTrafficCorpusTest`](tests/Feature/LegitimateTrafficCorpusTest.php)):
+
+<!-- noise-floor:start -->
+| Perfectly legitimate request | What an untuned install logs |
+|---|---|
+| `how to write a UNION SELECT in postgres` typed into a search box | `SQL Injection UNION` / high |
+| A blog post containing `<script>window.dataLayer=[];</script>` | `XSS Script Tag` / high |
+| A support ticket with a pasted `SELECT * FROM users WHERE id = 1` error | `SQLi Variant` / high |
+| Documentation explaining that `../../etc/passwd` is the classic traversal payload | `Directory Traversal` / medium |
+| A profile form collecting a genuine Indian mobile number and PAN | `PAN Number Detected` / high |
+<!-- noise-floor:end -->
+
+**None of these are bugs.** A blog post containing `<script>` is, byte for byte, a
+stored-XSS payload; a search for `UNION SELECT` is indistinguishable from an attempt
+at one. Nothing but application context separates them, and no pattern engine can
+supply that context for you.
+
+Supplying it is a one-line config change — `safe_fields`, `safe_paths`,
+`content_paths`, or `relaxed` mode. See [Reducing False Positives](#reducing-false-positives).
+**If your app accepts rich text, code samples, or search queries, do that before you
+judge the output.** The default is deliberately noisy-but-honest rather than
+quiet-and-incomplete: it is easier to silence a known match than to discover one that
+never fired.
 
 ### So what do you actually do with it?
 
@@ -1271,7 +1299,7 @@ Threats below the confidence threshold for your detection mode are not logged (s
 composer test
 ```
 
-The package includes 1,854 tests (4,925 assertions) covering detection patterns, middleware behavior, API endpoints, confidence scoring, exclusion rules, DDoS detection, evasion resistance, CVE patterns, LDAP/XPath/SSTI injection, bot/scanner detection, probe tracking, export commands, dashboard auth, safe fields, performance optimizations, and full-cycle HTTP-to-DB verification.
+The package includes 1,857 tests (4,950 assertions) covering detection patterns, middleware behavior, API endpoints, confidence scoring, exclusion rules, DDoS detection, evasion resistance, CVE patterns, LDAP/XPath/SSTI injection, bot/scanner detection, probe tracking, export commands, dashboard auth, safe fields, performance optimizations, and full-cycle HTTP-to-DB verification.
 
 ---
 

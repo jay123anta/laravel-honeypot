@@ -257,7 +257,22 @@ class LegitimateTrafficCorpusTest extends TestCase
             $observed[$name] = $this->logged();
         }
 
-        $this->assertSame([
+        $this->assertSame(self::untunedNoiseFloor(), $observed, 'the untuned noise floor changed — confirm this is intended');
+    }
+
+    /**
+     * The measured floor, as one source of truth.
+     *
+     * Extracted from the assertion above because the README publishes a subset
+     * of it, and a documented false-positive table that silently drifts from
+     * the measured one is worse than none at all. `ReadmeNoiseFloorTest`
+     * checks the README against this.
+     *
+     * @return array<string, string[]> corpus case => "label/severity" pairs
+     */
+    public static function untunedNoiseFloor(): array
+    {
+        return [
             'sql tutorial in a search box' => ['SQL Injection UNION/high'],
             'javascript snippet in a blog post' => ['Command Chain Injection/medium', 'XSS Script Tag/high'],
             'php snippet in a blog post' => ['RCE Shell Function/high'],
@@ -272,7 +287,7 @@ class LegitimateTrafficCorpusTest extends TestCase
             'a profile form collecting genuine indian pii' => [
                 'Bank Account Number Detected/high', 'Mobile Number Detected/low', 'PAN Number Detected/high',
             ],
-        ], $observed, 'the untuned noise floor changed — confirm this is intended');
+        ];
     }
 
     /**
