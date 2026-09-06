@@ -39,7 +39,7 @@ geo-enrichment, and fail2ban/blocklist exports. No request is ever blocked. Thin
 security camera, not a lock: it shows you exactly who's probing your routes, how
 often, and with what techniques.
 
-> Extracted from a production app and battle-tested on real traffic. 335 tests, no runtime
+> Extracted from a production app and battle-tested on real traffic. 1,854 tests, no runtime
 > dependencies beyond Laravel itself, and no internet connection required for detection.
 >
 > Upgrading? See [UPGRADING.md](UPGRADING.md). Contributing? See [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -96,6 +96,13 @@ geo-blocking — with data your edge layer never sees.
   secure and gives you *visibility*, not protection.
 - **Not an edge service.** If you can put Cloudflare in front, do — then add this for the
   application-level detail edge services can't see.
+- **Not a complete detector, and it can't be.** Pattern matching catches attacks that
+  *look like* known attacks. A novel technique, or a familiar one rewritten enough, will
+  pass through unlogged — and you will not be told that it did. Silence here means
+  "nothing matched", never "nothing happened". Where it earns its place is the
+  high-volume, low-effort traffic that makes up most of what actually hits a public
+  Laravel app: scanners, recon probes, off-the-shelf injection strings, credential
+  sprays. Treat a quiet log as an absence of evidence, not evidence of absence.
 
 ### So what do you actually do with it?
 
@@ -282,7 +289,10 @@ http://localhost:8000/?q=DROP TABLE users
 ```bash
 php artisan threat-detection:stats
 ```
-You should see a table with `Total Threats`, severity counts, and top IPs.
+You should see a table with `Recorded Detections`, severity counts, and top
+IPs. That number counts *rows*, not attempts: a detection is written once per
+IP per threat type per five minutes, and repeats inside that window are
+deduplicated rather than counted again.
 
 **Option B -  Tinker:**
 ```bash
@@ -421,9 +431,15 @@ THREAT_DETECTION_MODE=balanced
 # THREAT_DETECTION_HOME_COUNTRY=IN
 
 # Geo-enrichment provider used by threat-detection:enrich (default shown).
-# Cleartext HTTP because ip-api.com's free tier rejects HTTPS; point this at
-# an HTTPS endpoint if you hold a key. Enrichment is opt-in either way.
-# THREAT_DETECTION_GEO_ENDPOINT=http://ip-api.com/json
+# HTTPS since v1.8.0. A failed lookup is never retried over cleartext, and a
+# run in which every lookup failed exits non-zero rather than reporting
+# success. Enrichment is opt-in either way.
+#
+# ip-api.com's free tier rejects HTTPS, so on the free tier this command will
+# now fail rather than quietly sending your visitors' IP addresses in the
+# clear. Either point it at a provider you hold a key for, or set it back
+# explicitly and accept the disclosure.
+# THREAT_DETECTION_GEO_ENDPOINT=https://ip-api.com/json
 
 # Dashboard URL path (default: threat-detection)
 # THREAT_DETECTION_DASHBOARD_PATH=threat-detection
@@ -814,7 +830,8 @@ php artisan threat-detection:doctor
 php artisan threat-detection:stats
 
 # Enrich existing logs with geo-data (country, city, ISP, cloud provider)
-# Uses the free ip-api.com service (rate-limited to 45 req/min, auto-throttled)
+# Defaults to https://ip-api.com/json, rate-limited to 45 req/min and
+# auto-throttled. The free tier rejects HTTPS - see THREAT_DETECTION_GEO_ENDPOINT.
 php artisan threat-detection:enrich --days=7
 
 # Purge old logs to keep the database clean
@@ -1254,7 +1271,7 @@ Threats below the confidence threshold for your detection mode are not logged (s
 composer test
 ```
 
-The package includes 335 tests (856 assertions) covering detection patterns, middleware behavior, API endpoints, confidence scoring, exclusion rules, DDoS detection, evasion resistance, CVE patterns, LDAP/XPath/SSTI injection, bot/scanner detection, probe tracking, export commands, dashboard auth, safe fields, performance optimizations, and full-cycle HTTP-to-DB verification.
+The package includes 1,854 tests (4,925 assertions) covering detection patterns, middleware behavior, API endpoints, confidence scoring, exclusion rules, DDoS detection, evasion resistance, CVE patterns, LDAP/XPath/SSTI injection, bot/scanner detection, probe tracking, export commands, dashboard auth, safe fields, performance optimizations, and full-cycle HTTP-to-DB verification.
 
 ---
 

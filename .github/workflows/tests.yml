@@ -81,6 +81,67 @@ jobs:
       - name: Run tests
         run: vendor/bin/phpunit
 
+  # sqlite treats a varchar width as advisory and accepts an over-long value
+  # silently, so two findings could not be observed on it: TD-012, where an
+  # over-long geo value aborted the enrichment loop mid-run and left every
+  # later row unenriched, and TD-006, which turns on a NOT NULL column
+  # accepting the empty string. Both were reproduced on MariaDB by hand during
+  # the v1.8.0 audit and then had no way to run again.
+  #
+  # These tests skip unless THREAT_DETECTION_MYSQL=1, so the rest of the matrix
+  # is unaffected and a contributor without a database still gets a green run.
+  # This job is the only place they actually execute.
+  database:
+    runs-on: ubuntu-latest
+    name: Strict-mode database (MySQL)
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: 'yes'
+          MYSQL_DATABASE: threat_detection_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: 8.4
+          extensions: mbstring, sqlite3, pdo_mysql
+          coverage: none
+
+      - name: Install dependencies
+        run: composer update --prefer-dist --no-interaction --no-progress
+
+      # A skipped test is a green test. Without the skip check this job would
+      # pass just as happily with the database unreachable and every case
+      # skipped — which is precisely the failure it exists to prevent, since
+      # this is the only place these tests ever execute.
+      - name: Run the strict-mode database tests
+        env:
+          THREAT_DETECTION_MYSQL: '1'
+          THREAT_DETECTION_MYSQL_HOST: 127.0.0.1
+          THREAT_DETECTION_MYSQL_PORT: '3306'
+          THREAT_DETECTION_MYSQL_DATABASE: threat_detection_test
+          THREAT_DETECTION_MYSQL_USERNAME: root
+          THREAT_DETECTION_MYSQL_PASSWORD: ''
+        run: |
+          set -o pipefail
+          vendor/bin/phpunit tests/Security/MysqlStrictModeTest.php | tee result.txt
+          if grep -qi 'skipped' result.txt; then
+            echo "::error::The strict-mode tests skipped instead of running. They execute nowhere else, so a skip means they never ran at all."
+            exit 1
+          fi
+
   quality:
     runs-on: ubuntu-latest
     name: Lint & static analysis
