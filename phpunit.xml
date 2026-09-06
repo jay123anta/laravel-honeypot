@@ -12,6 +12,13 @@
         <testsuite name="Feature">
             <directory>tests/Feature</directory>
         </testsuite>
+        <!--
+            Reproductions for the findings in TD_AUDIT.md. Kept separate from
+            Feature so a finding can be run, and shown to fail, on its own.
+        -->
+        <testsuite name="Security">
+            <directory>tests/Security</directory>
+        </testsuite>
     </testsuites>
 
     <source>

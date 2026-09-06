@@ -39,3 +39,12 @@ dashboard_screenshot.png
 
 # Internal audit working document — never published
 AUDIT.md
+
+# Test-suite audit working document — never published
+TEST_AUDIT.md
+
+# Security audit working document — never published
+TD_AUDIT.md
+
+# Remediation working log — never published
+FIX_LOG.md
