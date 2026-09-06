@@ -602,6 +602,64 @@ return [
 
         'mask' => '[REDACTED]',
 
+        /*
+         * Field names whose value must never be written to the log, whether
+         * or not a detection pattern noticed it.
+         *
+         * This is the counterpart to 'labels' below, and it exists because
+         * labels alone could not do the job. The credential patterns are
+         * written for the wire form (password=hunter2), while every scanned
+         * segment is json_encoded first — "password":"hunter2" — so the
+         * closing quote sits between the key and the separator and the
+         * pattern never matches. Redaction keyed on those labels therefore
+         * never ran on an ordinary login form, and any request that tripped
+         * any other pattern stored the password in cleartext.
+         *
+         * Matching is on the field name in either shape: "field": "value" in
+         * a JSON segment, and field=value in a query string. Only the value is
+         * replaced, so you can still see that a credential was present.
+         *
+         * This is not the same as safe_fields. safe_fields stops a field being
+         * *scanned*; this lets you keep scanning it and stop storing it.
+         */
+        'fields' => [
+            // Passwords, in the shapes Laravel's own forms use
+            'password',
+            'password_confirmation',
+            'current_password',
+            'new_password',
+            'old_password',
+            'passwd',
+            'pwd',
+            // Application secrets
+            'secret',
+            'client_secret',
+            'api_key',
+            'apikey',
+            'api_secret',
+            'private_key',
+            // Session and request tokens
+            'token',
+            '_token',
+            'access_token',
+            'refresh_token',
+            'id_token',
+            'auth_token',
+            'csrf_token',
+            'xsrf_token',
+            'session_id',
+            'sessionid',
+            'phpsessid',
+            'authorization',
+            // Payment and step-up material
+            'card_number',
+            'credit_card',
+            'cvv',
+            'cvc',
+            'pin',
+            'otp',
+        ],
+
         // Labels whose matched value must never be written to the log.
         'labels' => [
             // Regional PII

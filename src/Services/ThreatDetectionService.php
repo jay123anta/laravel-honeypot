@@ -33,11 +33,72 @@ class ThreatDetectionService
         ?ExclusionRuleService $exclusionRuleService = null,
         ?ThreatCorrelationService $correlation = null
     ) {
-        $this->ddosThreshold = config('threat-detection.ddos.threshold', 100);
-        $this->ddosWindowSeconds = config('threat-detection.ddos.window', 60);
+        // Both have a floor of 1. A threshold of 0 or below makes every single
+        // request a flood; a window of 0 or below expires the counter as fast
+        // as it is written, so nothing is ever counted. Neither is a setting
+        // anyone means, and both are silent when they happen.
+        $this->ddosThreshold = self::intSetting('threat-detection.ddos.threshold', 100, 1);
+        $this->ddosWindowSeconds = self::intSetting('threat-detection.ddos.window', 60, 1);
         $this->confidenceScorer = $confidenceScorer ?? new ConfidenceScorer;
         $this->exclusionRuleService = $exclusionRuleService ?? new ExclusionRuleService;
         $this->correlation = $correlation ?? new ThreatCorrelationService;
+    }
+
+    /** @var array<string, bool> Settings already reported as unusable */
+    private static array $badSettingWarned = [];
+
+    /**
+     * An integer setting, or the default if the configured value is not a
+     * number.
+     *
+     * These land in typed int properties, and this constructor runs while the
+     * container is building the middleware — before handle(), so the
+     * try/catch that keeps the detector passive is not yet on the stack. A
+     * plain assignment therefore turned a mistyped .env value into a
+     * TypeError on *every* request to the application.
+     *
+     * Values from .env arrive as strings, so "300" has to keep working and
+     * only genuine nonsense ("1k", "300/min", a stray quote) may fall back.
+     * Falling back is announced once per process: a threshold that silently
+     * reverted to the default would be its own kind of surprise.
+     */
+    private static function intSetting(string $key, int $default, ?int $minimum = null): int
+    {
+        $value = config($key, $default);
+
+        if (!is_numeric($value)) {
+            self::warnAboutSetting(
+                $key,
+                "config('{$key}') is not a number, so the default of {$default} is being used. "
+                . 'Check the matching THREAT_DETECTION_* value in your .env.'
+            );
+
+            return $default;
+        }
+
+        $value = (int) $value;
+
+        if ($minimum !== null && $value < $minimum) {
+            self::warnAboutSetting(
+                $key,
+                "config('{$key}') is {$value}, which is below the minimum of {$minimum}; "
+                . "using {$minimum} instead."
+            );
+
+            return $minimum;
+        }
+
+        return $value;
+    }
+
+    private static function warnAboutSetting(string $key, string $message): void
+    {
+        if (isset(self::$badSettingWarned[$key])) {
+            return;
+        }
+
+        self::$badSettingWarned[$key] = true;
+        Log::warning('Threat detection: ' . $message);
     }
 
     /**
@@ -135,9 +196,31 @@ class ThreatDetectionService
             $mode
         );
 
+        /*
+         * The floor a detection must clear to be kept, per mode.
+         *
+         * 'relaxed' was 40, which no single detection could ever reach. In
+         * relaxed mode only high-severity patterns run at all, and
+         * ConfidenceScorer subtracts 10 from every score, so one match scores
+         *
+         *     20 base + 15 high-severity + 10 context - 10 relaxed = 35
+         *
+         * and just 25 from a request body, where the context weight is 1.0 and
+         * earns no bonus. Both sat below 40, so relaxed silently discarded
+         * every attack that tripped exactly one pattern unless the client also
+         * carried an attack-tool user agent (+25) — that is, unless the
+         * attacker announced themselves. In practice it was a two-signature
+         * minimum, offered to operators as "only high-severity patterns
+         * trigger".
+         *
+         * 25 is the lowest score a lone high-severity match can produce, so
+         * the floor now admits exactly what the mode says it admits. Relaxed
+         * is still much stricter than balanced: its severity filter, not its
+         * confidence floor, is what does the work.
+         */
         $modeMinConfidence = match ($mode) {
             'strict' => 0,
-            'relaxed' => 40,
+            'relaxed' => 25,
             default => 10,
         };
 
@@ -155,13 +238,30 @@ class ThreatDetectionService
         $seenTypes = [];   // within-request dedup; cache mark deferred until after a successful write
 
         // Detection is finished; from here on we are deciding what to *keep*.
-        // Mask the values of any sensitive pattern that fired, so the log does
-        // not become a second cleartext copy of the data it just warned about.
-        // The URL matters as much as the body — a PAN in a query string lands
-        // in the url column otherwise.
+        //
+        // Two independent passes, because they answer different questions.
+        //
+        // redact() masks the values matched by sensitive patterns that fired,
+        // so the log does not become a second cleartext copy of the data it
+        // just warned about.
+        //
+        // redactSensitiveFields() masks anything sitting under a credential
+        // field name, whether or not a pattern noticed it. That distinction is
+        // the whole point: the credential patterns are written for the wire
+        // form (password=…), and every segment is json_encoded before matching
+        // ("password":"…"), so the closing quote before the separator meant
+        // they never fired on an ordinary login form — and redaction keyed on
+        // them therefore never ran. Every password posted to a login route
+        // during an attack was stored in cleartext for the whole retention
+        // period.
+        //
+        // The URL matters as much as the body: a credential or a PAN in a
+        // query string lands in the url column otherwise.
         $sensitive = $this->sensitiveLabelsAmong($allThreats);
-        $truncatedPayload = $this->redact(substr($payload, 0, 2000), $sensitive);
-        $storedUrl = $this->redact($url, $sensitive);
+        $truncatedPayload = $this->redactSensitiveFields(
+            $this->redact(substr($payload, 0, 2000), $sensitive)
+        );
+        $storedUrl = $this->redactSensitiveFields($this->redact($url, $sensitive));
 
         $now = now();
         $userId = Auth::id();
@@ -329,6 +429,145 @@ class ThreatDetectionService
         return $text;
     }
 
+    /** @var string|null Alternation of configured credential field names */
+    private static ?string $sensitiveFieldAlternation = null;
+
+    /**
+     * Mask credential values that appear in *string* form: a query string in
+     * the url column, or a credential embedded inside another field's value
+     * (a "next=/login?password=…" redirect target, say).
+     *
+     * Structured data is handled by redactArray() before it is ever encoded;
+     * this is the pass for text that was never an array to begin with.
+     *
+     * Only the value is replaced — the field name stays, so an operator can
+     * still see that a credential was present and where.
+     *
+     * The pattern is a plain negated class with no nesting and no alternation
+     * inside a quantifier, so it cannot backtrack. That matters: redaction
+     * fails closed, and a regex that gave up would blank the entire row.
+     */
+    private function redactSensitiveFields(string $text): string
+    {
+        if ($text === '' || !config('threat-detection.redact.enabled', true)) {
+            return $text;
+        }
+
+        $alternation = $this->sensitiveFieldAlternation();
+
+        if ($alternation === '') {
+            return $text;
+        }
+
+        $mask = (string) config('threat-detection.redact.mask', '[REDACTED]');
+
+        // password=hunter2 -> password=[REDACTED]
+        // The value runs to the next separator; a percent-encoded '&' inside
+        // the value is not a separator, which is why '%26' does not end it.
+        return $this->replaceOrMask(
+            '/(?<![A-Za-z0-9_])(' . $alternation . ')(=)[^&\s"\\\\]*/i',
+            fn (array $m): string => $m[1] . $m[2] . $mask,
+            $text,
+            $mask
+        );
+    }
+
+    /**
+     * preg_replace_callback that treats failure as "cannot prove this is
+     * clean" and masks the whole text, matching redact()'s stance. Returning
+     * the original on a backtrack-limit failure would leave exactly the
+     * cleartext this exists to remove.
+     */
+    private function replaceOrMask(string $regex, callable $callback, string $text, string $mask): string
+    {
+        $result = @preg_replace_callback($regex, $callback, $text);
+
+        return $result === null ? $mask : $result;
+    }
+
+    /**
+     * The field names masked when config does not say otherwise.
+     *
+     * Duplicated from config/threat-detection.php on purpose. mergeConfigFrom()
+     * merges top-level keys only, so an application that published its config
+     * before this list existed keeps its own 'redact' block wholesale and would
+     * never receive the new key — which would leave exactly the installs that
+     * have been storing cleartext passwords still storing them, silently,
+     * after upgrading. A security default has to live in code, where an
+     * upgrade actually delivers it; config then overrides rather than enables.
+     *
+     * An explicit empty array in config still switches it off, because that is
+     * a deliberate statement rather than an absent key.
+     */
+    private const DEFAULT_SENSITIVE_FIELDS = [
+        'password', 'password_confirmation', 'current_password', 'new_password',
+        'old_password', 'passwd', 'pwd',
+        'secret', 'client_secret', 'api_key', 'apikey', 'api_secret', 'private_key',
+        'token', '_token', 'access_token', 'refresh_token', 'id_token', 'auth_token',
+        'csrf_token', 'xsrf_token', 'session_id', 'sessionid', 'phpsessid', 'authorization',
+        'card_number', 'credit_card', 'cvv', 'cvc', 'pin', 'otp',
+    ];
+
+    /** @var array<string, true>|null normalised field name => true */
+    private static ?array $sensitiveFieldNames = null;
+
+    /**
+     * The configured sensitive field names, normalised and indexed for O(1)
+     * lookup.
+     *
+     * @return array<string, true>
+     */
+    private function sensitiveFieldNames(): array
+    {
+        if (self::$sensitiveFieldNames !== null) {
+            return self::$sensitiveFieldNames;
+        }
+
+        if (!config('threat-detection.redact.enabled', true)) {
+            return self::$sensitiveFieldNames = [];
+        }
+
+        $configured = config('threat-detection.redact.fields');
+        $fields = is_array($configured) ? $configured : self::DEFAULT_SENSITIVE_FIELDS;
+
+        $names = [];
+
+        foreach ($fields as $field) {
+            if (!is_string($field) || trim($field) === '') {
+                continue;
+            }
+            $names[$this->normaliseFieldName($field)] = true;
+        }
+
+        return self::$sensitiveFieldNames = $names;
+    }
+
+    private function sensitiveFieldAlternation(): string
+    {
+        if (self::$sensitiveFieldAlternation !== null) {
+            return self::$sensitiveFieldAlternation;
+        }
+
+        $names = array_keys($this->sensitiveFieldNames());
+
+        // Longest first, so 'password_confirmation' is matched whole rather
+        // than as 'password' followed by a stray suffix.
+        usort($names, static fn ($a, $b) => strlen($b) <=> strlen($a));
+
+        // Each normalised name is expanded back into the spellings it came
+        // from: either separator, and an optional 'x-' prefix, so a query
+        // string carrying x-api-key= is masked as readily as api_key=.
+        $expanded = array_map(
+            static fn (string $name): string => '(?:x[-_])?' . implode(
+                '[-_]',
+                array_map(static fn (string $part): string => preg_quote($part, '/'), explode('_', $name))
+            ),
+            $names
+        );
+
+        return self::$sensitiveFieldAlternation = implode('|', $expanded);
+    }
+
     /** @var array<string, string[]>|null label => regexes, built once */
     private static ?array $labelRegexMap = null;
 
@@ -419,17 +658,85 @@ class ThreatDetectionService
     {
         $data = [];
 
-        if (!empty($segments['query'])) {
-            $data[] = 'QUERY: ' . $segments['query'];
-        }
-        if (!empty($segments['body'])) {
-            $data[] = 'BODY: ' . $segments['body'];
-        }
-        if (!empty($segments['headers'])) {
-            $data[] = 'HEADERS: ' . $segments['headers'];
+        foreach (['query' => 'QUERY', 'body' => 'BODY', 'headers' => 'HEADERS'] as $segment => $label) {
+            if (empty($segments[$segment])) {
+                continue;
+            }
+
+            // Encode a masked copy of the structured data rather than the
+            // segment the detector scanned. Detection has already run against
+            // the unmasked version, so nothing is lost by storing less.
+            //
+            // Re-encoding is skipped entirely when nothing matched, which is
+            // the overwhelmingly common case — most requests carry no
+            // credential field at all, and paying for a second json_encode of
+            // every segment on every request to cover the few that do is not a
+            // trade worth making.
+            $rendered = false;
+
+            if (isset($this->segmentData[$segment])) {
+                $masked = $this->redactArray($this->segmentData[$segment], $changed);
+
+                if ($changed) {
+                    $rendered = json_encode($masked, self::SEGMENT_JSON_FLAGS);
+                }
+            }
+
+            // json_encode can still fail on input no flag can rescue; fall back
+            // to the already-built segment rather than dropping the entry.
+            $data[] = $label . ': ' . ($rendered !== false ? $rendered : $segments[$segment]);
         }
 
         return implode("\n", $data);
+    }
+
+    /**
+     * Replace the value of any key whose name is configured as sensitive, at
+     * any depth and whatever its type.
+     *
+     * Key comparison is exact against a normalised name, so nothing is matched
+     * by accident: 'password' does not match 'password_hint' unless that name
+     * is listed too. Normalisation folds case, treats '-' and '_' as the same
+     * separator and ignores a leading 'x-', which is what makes the header
+     * spellings ('X-Api-Key', 'x-auth-token') resolve to the same entry as the
+     * body spellings ('api_key', 'auth_token').
+     *
+     * @param  array<mixed>  $data
+     * @param  bool|null  $changed  set to true when anything was actually masked
+     * @return array<mixed>
+     */
+    private function redactArray(array $data, ?bool &$changed = null): array
+    {
+        $changed ??= false;
+        $sensitive = $this->sensitiveFieldNames();
+
+        if ($sensitive === []) {
+            return $data;
+        }
+
+        $mask = (string) config('threat-detection.redact.mask', '[REDACTED]');
+        $out = [];
+
+        foreach ($data as $key => $value) {
+            if (isset($sensitive[$this->normaliseFieldName((string) $key)])) {
+                $out[$key] = $mask;
+                $changed = true;
+
+                continue;
+            }
+
+            $out[$key] = is_array($value) ? $this->redactArray($value, $changed) : $value;
+        }
+
+        return $out;
+    }
+
+    private function normaliseFieldName(string $name): string
+    {
+        $name = strtolower(trim($name));
+        $name = (string) preg_replace('/^x[-_]/', '', $name);
+
+        return str_replace('-', '_', $name);
     }
 
     /**
@@ -444,6 +751,7 @@ class ThreatDetectionService
     {
         // 'raw' is built last and scanned last — see detectThreatPatternsWithContext().
         $segments = ['path' => '', 'query' => '', 'body' => '', 'headers' => '', 'raw' => ''];
+        $this->segmentData = [];
         $safeFields = config('threat-detection.safe_fields', []);
         $safePaths = config('threat-detection.safe_paths', []);
 
@@ -475,6 +783,7 @@ class ThreatDetectionService
             }
             if (!empty($queryData)) {
                 $segments['query'] = json_encode($queryData, self::SEGMENT_JSON_FLAGS);
+                $this->segmentData['query'] = $queryData;
             }
         }
 
@@ -501,6 +810,7 @@ class ThreatDetectionService
             }
             if (!empty($postData)) {
                 $segments['body'] = json_encode($postData, self::SEGMENT_JSON_FLAGS);
+                $this->segmentData['body'] = $postData;
             }
         }
 
@@ -512,12 +822,34 @@ class ThreatDetectionService
 
         if ($headers->isNotEmpty()) {
             $segments['headers'] = json_encode($headers, self::SEGMENT_JSON_FLAGS);
+            $this->segmentData['headers'] = $headers->all();
         }
 
         $segments['raw'] = $this->buildRawSegment($request);
 
         return $segments;
     }
+
+    /**
+     * The structured data behind the query, body and headers segments, kept so
+     * the stored payload can be built from a *redacted copy* of it.
+     *
+     * Redacting the encoded JSON with a regex instead was the first attempt and
+     * it was wrong in two ways: it only recognised string values, so a numeric
+     * PIN or an array of tokens went to the log in cleartext, and the
+     * string-matching subpattern exhausted the PCRE JIT stack above about
+     * 8 KB — which, given redaction fails closed, would have blanked the whole
+     * row. Masking the array before it is encoded has neither problem: keys are
+     * compared exactly, every value type is covered, nesting is free, and there
+     * is no regex to get wrong.
+     *
+     * Reset per request rather than accumulated, because the service is a
+     * singleton and would otherwise carry one request's data into the next
+     * under Octane.
+     *
+     * @var array<string, array<mixed>>
+     */
+    private array $segmentData = [];
 
     /**
      * The request as it arrived, still percent-encoded.
@@ -616,39 +948,110 @@ class ThreatDetectionService
      * Strips SQL comments, decodes HTML entities, decodes Unicode escapes,
      * performs recursive URL decoding, and collapses whitespace.
      */
+    /**
+     * How many times the decoding sequence is applied.
+     *
+     * One pass was not enough. Each decoder can *reveal* input for another —
+     * percent-decoding produces an escape sequence, entity-decoding produces a
+     * SQL comment — and running them once each in a fixed order meant whichever
+     * decoder ran earlier never saw what a later one uncovered. Stacking two
+     * encodings in the right order defeated the pipeline: a comment written as
+     * HTML entities survived the comment strip, and a hex escape hidden behind
+     * two layers of percent encoding was never decoded at all.
+     *
+     * Three is the same budget the percent decoder already used on its own, and
+     * the loop stops as soon as a pass changes nothing, so ordinary traffic
+     * still costs a single pass.
+     */
+    private const MAX_NORMALIZATION_PASSES = 3;
+
     private function normalizeForDetection(string $payload): string
     {
-        // Strip SQL inline comments: UNION/**/SELECT → UNION SELECT
-        $normalized = preg_replace('/\/\*.*?\*\//s', ' ', $payload);
+        $normalized = $payload;
 
-        // Decode HTML entities: &#60;script&#62; → <script>, &#x3c; → <
-        $normalized = html_entity_decode($normalized, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        for ($pass = 0; $pass < self::MAX_NORMALIZATION_PASSES; $pass++) {
+            $before = $normalized;
+            $normalized = $this->decodeOnce($normalized);
 
-        // Decode Unicode escape sequences: \u003c → <
-        $normalized = preg_replace_callback('/\\\\u([0-9a-fA-F]{4})/', function ($m) {
-            $code = hexdec($m[1]);
-
-            return $code < 128 ? chr($code) : $m[0];
-        }, $normalized);
-
-        // Decode hex escape sequences: \x3c → <
-        $normalized = preg_replace_callback('/\\\\x([0-9a-fA-F]{2})/', function ($m) {
-            return chr(hexdec($m[1]));
-        }, $normalized);
-
-        // Recursive URL decoding (max 3 passes to prevent infinite loops)
-        for ($i = 0; $i < 3; $i++) {
-            $decoded = urldecode($normalized);
-            if ($decoded === $normalized) {
+            if ($normalized === $before) {
                 break;
             }
-            $normalized = $decoded;
         }
 
         // Collapse whitespace
         $normalized = preg_replace('/\s+/', ' ', $normalized);
 
         return trim($normalized);
+    }
+
+    /**
+     * One decoding pass: comments, entities, escape sequences, percent
+     * encoding.
+     *
+     * On the backslash counts below. Every segment is json_encode()d before it
+     * reaches here, and json_encode escapes a backslash as two. The escape
+     * decoders used to require exactly one, so they consumed the *second*
+     * backslash of the pair and left the first in place: a hex-escaped "<"
+     * normalized to a backslash followed by "<" rather than to "<", and the
+     * XSS Script Tag pattern — which needs a literal closing script tag —
+     * stopped matching. Accepting a run of backslashes handles the
+     * JSON-escaped and the raw form alike, and costs nothing on input that has
+     * neither.
+     */
+    private function decodeOnce(string $text): string
+    {
+        /*
+         * Cheap bail-out for text nothing here can change.
+         *
+         * Every decoder below needs one of a handful of characters to have
+         * anything to do: '&' for an HTML entity, a backslash for a \x or \u
+         * escape, '%' for percent or IIS encoding, '+' for the space urldecode
+         * turns it into, and "/*" for a SQL comment. Ordinary request data
+         * contains none of them, and without this the loop pays for a whole
+         * second pass on every clean request purely to discover that the first
+         * one changed nothing.
+         *
+         * Skipping is safe by construction: if none of these bytes is present,
+         * every operation below is the identity.
+         */
+        if (strpbrk($text, '&\\%+') === false && !str_contains($text, '/*')) {
+            return $text;
+        }
+
+        // Strip SQL inline comments: UNION/**/SELECT -> UNION SELECT
+        $text = preg_replace('/\/\*.*?\*\//s', ' ', $text);
+
+        // Decode HTML entities: &#60;script&#62; -> <script>, &#x3c; -> <
+        $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+
+        // Decode JavaScript unicode escapes (backslash, u, four hex digits).
+        $text = preg_replace_callback('/\\\\+u([0-9a-fA-F]{4})/', function ($m) {
+            $code = hexdec($m[1]);
+
+            return $code < 128 ? chr($code) : $m[0];
+        }, $text);
+
+        // Decode IIS-style %uXXXX. The evasion pattern flags this encoding but
+        // nothing ever decoded it, so a %u-encoded attack was reported only as
+        // "someone used IIS encoding" and the attack itself never identified.
+        $text = preg_replace_callback('/%u([0-9a-fA-F]{4})/i', function ($m) {
+            $code = hexdec($m[1]);
+
+            return $code < 128 ? chr($code) : $m[0];
+        }, $text);
+
+        // Decode hex escapes (backslash, x, two hex digits).
+        $text = preg_replace_callback('/\\\\+x([0-9a-fA-F]{2})/', function ($m) {
+            return chr(hexdec($m[1]));
+        }, $text);
+
+        // Percent decoding, one layer per pass.
+        $decoded = urldecode($text);
+        if ($decoded !== $text) {
+            $text = $decoded;
+        }
+
+        return $text;
     }
 
     /** Patterns matched before normalization — detect evasion attempts themselves. */
@@ -787,15 +1190,33 @@ class ThreatDetectionService
     /**
      * Determine which pattern categories are relevant for a given payload.
      * Returns a set of category keys whose keywords were found.
+     *
+     * Checked against two views of the payload: as normalized, and with all
+     * whitespace removed. Stripping a SQL comment leaves a space behind —
+     * "\x73ystem/​*​*​/(" normalizes to "system (" — and a keyword written
+     * without one ("system(") then failed to match, so the whole 'rce'
+     * category was skipped and the pattern that would have caught it never
+     * ran. The space is deliberate and cannot simply be dropped: removing it
+     * would fuse "UNION/​*​*​/SELECT" into "UNIONSELECT".
+     *
+     * Widening the category set only ever enables more patterns to run; each
+     * still has to match on its own, so this cannot introduce a false
+     * positive. Keywords that contain a space of their own ("order by",
+     * "net user") still match through the first view.
      */
     private function getRelevantCategories(string $payload): array
     {
         $lower = strtolower($payload);
+        // str_replace, not preg_replace: normalizeForDetection() has already
+        // collapsed every run of whitespace to a single space, so there is
+        // nothing left for a regex to do that a literal replace cannot.
+        $collapsed = str_replace(' ', '', $lower);
+
         $relevant = [];
 
         foreach (self::$categoryKeywords as $category => $keywords) {
             foreach ($keywords as $keyword) {
-                if (str_contains($lower, $keyword)) {
+                if (str_contains($lower, $keyword) || str_contains($collapsed, $keyword)) {
                     $relevant[$category] = true;
                     break; // One keyword match activates the whole category
                 }
@@ -1003,6 +1424,15 @@ class ThreatDetectionService
         self::$validatorWarned = [];
         self::$writeFailureWarned = false;
         self::$labelRegexMap = null;
+        // Warn-once flags are process-lifetime state too. Missing this one
+        // meant the "cache driver cannot increment atomically" warning could
+        // never be emitted a second time, including after the config change
+        // that would make it newly relevant — which is what flushCaches()
+        // exists for under Octane.
+        self::$ddosCacheWarned = false;
+        self::$badSettingWarned = [];
+        self::$sensitiveFieldAlternation = null;
+        self::$sensitiveFieldNames = null;
     }
 
     public function detectThreatPatternsWithContext(
@@ -1291,7 +1721,10 @@ class ThreatDetectionService
         try {
             DB::table(config('threat-detection.table_name', 'threat_logs'))->insert([
                 'ip_address' => $ip,
-                'url' => $url,
+                // A flood is still a request, and its query string can carry a
+                // credential like any other. This row skipped redaction
+                // entirely because it is written on its own path.
+                'url' => $this->redactSensitiveFields($url),
                 'user_agent' => $userAgent,
                 'type' => $type,
                 'payload' => 'Request frequency exceeded threshold',
@@ -1432,7 +1865,22 @@ class ThreatDetectionService
             // ── Phase 2: Missing Attack Categories ───────────────────
 
             // LDAP Injection (CWE-90, OWASP A05)
-            '/[)(|*\\\\].*\(.*=/s' => 'LDAP Injection',
+            //
+            // Written with negated classes and possessive quantifiers rather
+            // than the obvious /[)(|*\\].*\(.*=/s. That form has two greedy
+            // .* under /s over a subject made of the character class's own
+            // members, which backtracks quadratically: appending about 1,500
+            // '(' characters to a real LDAP injection exhausted
+            // pcre.backtrack_limit, and patternMatches() reads the resulting
+            // false as "no threat". 1.5 KB of padding switched this detection
+            // off.
+            //
+            // The acceptance set is unchanged. The question either form asks
+            // is "a metacharacter, then later a '(', then later an '='"; and
+            // taking the *first* '(' after the metacharacter cannot lose a
+            // match, because any '=' following a later '(' also follows the
+            // first one.
+            '/[)(|*\\\\][^(]*+\([^=]*+=/' => 'LDAP Injection',
             '/\(\|[^)]*\([^)]*=/' => 'LDAP OR Injection',
 
             // XPath Injection (CWE-643)

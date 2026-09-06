@@ -2,6 +2,138 @@
 
 All notable changes to `jayanta/laravel-threat-detection` will be documented in this file.
 
+## [Unreleased]
+
+Seven defects found by a full audit of the test suite, all of which had been
+shipping, plus five more found by a second audit of the fixes themselves. The
+suite grew from 365 tests to 1,553 in the process; the new tests are the
+regression guards for everything below.
+
+### Security
+
+- **Plaintext credentials were written to `threat_logs`.** Any request that
+  tripped any detection while also carrying a password field stored that
+  password in cleartext, for the whole retention period, readable by anyone
+  with dashboard or database access. A bot spraying SQL injection at a login
+  form produced one row per attempt, each holding a real user's password. If
+  the credential was in the query string it landed in the `url` column too.
+
+  The cause was one character. Every scanned segment is `json_encode`d before
+  matching, so a form field arrives as `{"password":"…"}` while the credential
+  patterns are written for the wire form (`password=…`) — the closing quote
+  sits between the key and the separator and the match fails. Six of the seven
+  credential patterns were affected. Because no label fired, the redaction
+  added in v1.7.1 had nothing to mask and never ran. `auth_paths` made it
+  worse: it deliberately suppresses those labels on `/login` and `/register`,
+  which guaranteed redaction could not run on the paths where passwords are
+  most likely to be present.
+
+  Redaction no longer depends on a pattern having fired. Request data is masked
+  by *field name* — passwords, API keys, tokens, session ids and card data —
+  before it is encoded for storage, so every value type and any nesting depth
+  is covered: a numeric PIN, a null, an array of tokens or a nested object are
+  masked as readily as a string. Names are compared after folding case,
+  normalising `-` and `_`, and dropping a leading `x-`, so the header
+  spellings (`X-Api-Key`, `x-auth-token`) resolve to the same entry as the body
+  ones (`api_key`, `auth_token`). A second pass covers credentials that appear
+  in string form — a query string in the `url` column, or one embedded in
+  another field's value. The DDoS row, written on its own path and previously
+  skipping redaction entirely, is covered too.
+
+  The list is configurable through the new `redact.fields` key, but its default
+  lives in code rather than only in `config/threat-detection.php`.
+  `mergeConfigFrom()` merges top-level keys only, so an application that
+  published its config before this release keeps its own `redact` block
+  wholesale and would never receive a config-only default — which would have
+  left exactly the installs that had been storing cleartext passwords still
+  storing them, silently, after upgrading. Config now overrides the default
+  rather than enabling it, and an explicit empty array still switches it off.
+
+  The patterns themselves are deliberately unchanged: making them match the
+  JSON form would fire "Password Exposure" on every legitimate login. Nor does
+  masking blind the detector — an attack delivered *through* a password field
+  is still detected, because scanning happens before masking. That is the
+  distinction from `safe_fields`, which stops the field being scanned at all.
+
+### Fixed
+
+- **A non-numeric `ddos.threshold` returned a 500 on every request.** The value
+  was assigned straight into an `int` typed property while the container was
+  *building* the middleware — before `handle()` runs, so the `try/catch` that
+  keeps the detector passive was not yet on the stack. Values from `.env`
+  arrive as strings, so `THREAT_DETECTION_DDOS_THRESHOLD=1k` or a stray quote
+  was enough to take the whole application down. Both DDoS settings now fall
+  back to their documented default and log the reason once. Numeric strings
+  such as `"300"` keep working exactly as before.
+
+  Both are also floored at 1. `is_numeric()` accepts negatives and zero, and
+  both are quietly destructive in opposite directions: a threshold of zero or
+  below makes the very first request a flood, so every client is logged as a
+  DDoS; a window of zero or below expires the counter as fast as it is written,
+  so a real flood is never detected at all.
+
+- **LDAP injection detection was switched off by 1.5 KB of padding.** The
+  pattern had two greedy `.*` under `/s` over a subject built from its own
+  character class, which backtracks quadratically. Appending about 1,500 `(`
+  characters to a real LDAP injection exhausted `pcre.backtrack_limit`, and
+  `preg_match()` returning `false` is indistinguishable from "no threat".
+  Rewritten with negated classes and possessive quantifiers: same acceptance
+  set, no backtracking, and a sweep of all 158 patterns against 21 classes of
+  adversarial input now finds nothing that abandons a match at the size the
+  package scans.
+
+- **Hex and unicode escapes were never actually decoded.** `json_encode`
+  escapes a backslash as two, and the escape decoders required exactly one, so
+  they consumed the second backslash of the pair and left the first behind — a
+  hex-escaped `<` normalized to `\<` rather than `<`, and the XSS pattern
+  stopped matching. Both decoders now accept a run of backslashes. The README
+  has always listed these among the techniques the pipeline defeats; the
+  existing tests passed because they assert only the evasion *flag*, which is
+  matched on the un-normalized text and was never affected.
+
+- **Two stacked evasion techniques defeated the normalization pipeline.** The
+  decode sequence ran once, in a fixed order, so any encoding a later step
+  revealed was never seen by an earlier one: a SQL comment written as HTML
+  entities survived the comment strip, an escape sequence hidden behind two
+  layers of percent encoding was never decoded, and a doubly entity-encoded
+  payload decoded one level and stopped. The sequence now repeats until a pass
+  changes nothing, up to three times. IIS `%uXXXX` encoding is now decoded as
+  well as flagged, so a `%u`-encoded attack is identified rather than merely
+  reported as "someone used IIS encoding".
+
+- **The category pre-screen skipped patterns after a comment strip.** Removing
+  a SQL comment leaves a space behind, so `system/*​*​/(` normalized to
+  `system (` and the `rce` category keyword `system(` no longer matched —
+  taking the whole category out of play. Categories are now matched against the
+  normalized payload and a whitespace-free view of it. This only ever enables
+  more patterns to run, so it cannot introduce a false positive.
+
+- **`relaxed` mode discarded every single-signature attack.** It set a minimum
+  confidence of 40 while also subtracting 10 from every score, so one match
+  scored at most 35 — 25 from a request body — and was dropped silently. Only
+  an attacker announcing themselves with a scanner user agent (+25) could clear
+  the bar. In practice the mode was a two-signature minimum, offered as "only
+  high-severity patterns trigger" and recommended to content-heavy sites least
+  likely to notice. The floor is now 25, the lowest score a lone high-severity
+  match can produce.
+
+- **`flushCaches()` missed one warn-once flag.** `$ddosCacheWarned` was never
+  reset, so the "cache driver does not support atomic increment" warning could
+  not be emitted again after a config change — which is what `flushCaches()`
+  exists for under Octane.
+
+### Notes
+
+Verified against a corpus of legitimate-but-attack-shaped traffic before and
+after: the false-positive noise floor is byte-for-byte unchanged, and an attack
+delivered through a redacted field is still detected.
+
+Detection costs about 15 % more per request than before — measured, on this
+hardware, as 0.25 ms to 0.28 ms for an ordinary GET and 0.71 ms to 1.1 ms for a
+maximally hostile 8 KB body. That is the price of decoding until the payload
+stops changing instead of once. Clean traffic short-circuits the loop before
+the first pass when the text contains no character any decoder could act on.
+
 ## [1.7.2] - 2026-08-27
 
 ### Fixed
