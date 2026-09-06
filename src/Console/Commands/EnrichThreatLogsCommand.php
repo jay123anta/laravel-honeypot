@@ -217,6 +217,27 @@ class EnrichThreatLogsCommand extends Command
             && filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false;
     }
 
+    /**
+     * A provider field as a string of at most $maxLength characters, or null.
+     *
+     * Anything that is not a scalar is dropped: the shipped provider returns
+     * strings, and an array or object means something else is answering.
+     */
+    protected function boundedString(mixed $value, int $maxLength): ?string
+    {
+        if ($value === null || is_array($value) || is_object($value)) {
+            return null;
+        }
+
+        $value = trim((string) $value);
+
+        if ($value === '') {
+            return null;
+        }
+
+        return mb_substr($value, 0, $maxLength);
+    }
+
     protected function fetchGeoData(string $ip): array
     {
         try {
@@ -231,12 +252,28 @@ class EnrichThreatLogsCommand extends Command
             if ($response->successful()) {
                 $data = $response->json();
 
+                /*
+                 * TD-012. The answer is written into fixed-width columns, and
+                 * it comes from a third party over the network — so it is
+                 * bounded and coerced here rather than trusted.
+                 *
+                 * Untrimmed, an over-long value raises on MySQL in strict
+                 * mode, and the update that writes it sits outside this
+                 * method's best-effort catch: the command would abort part-way
+                 * through its loop and leave enrichment half applied. A value
+                 * that fits can never do that.
+                 *
+                 * A non-scalar field is discarded rather than cast, since an
+                 * array or object here means the provider is not returning what
+                 * this code was written against and guessing would store
+                 * nonsense.
+                 */
                 return [
-                    'country_code' => $data['countryCode'] ?? null,
-                    'country_name' => $data['country'] ?? null,
-                    'city' => $data['city'] ?? null,
-                    'isp' => $data['isp'] ?? null,
-                    'org' => $data['org'] ?? null,
+                    'country_code' => $this->boundedString($data['countryCode'] ?? null, 5),
+                    'country_name' => $this->boundedString($data['country'] ?? null, 100),
+                    'city' => $this->boundedString($data['city'] ?? null, 100),
+                    'isp' => $this->boundedString($data['isp'] ?? null, 255),
+                    'org' => $this->boundedString($data['org'] ?? null, 255),
                 ];
             }
         } catch (\Throwable $e) {

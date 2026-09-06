@@ -121,11 +121,59 @@ class GeoEnrichmentTest extends TestCase
     }
 
     /**
-     * A response whose fields are not strings at all — an array, an object, a
-     * number. The values go straight into an update().
+     * TD-012. The provider's answer is written into fixed-width columns:
+     * country_code is varchar(5), country_name and city varchar(100), isp
+     * varchar(255).
+     *
+     * On sqlite those widths are advisory, so an over-long value is stored
+     * whole and the earlier tests pass — which is exactly why they could not
+     * demonstrate the finding. On MySQL in strict mode the same value raises,
+     * and the update sits outside fetchGeoData()'s best-effort catch, so the
+     * command aborts part-way through its loop and leaves enrichment half
+     * applied.
+     *
+     * Asserting the *stored width* rather than the exit code makes the finding
+     * testable on sqlite and fixes it for MySQL at the same time: a value that
+     * fits can never raise.
      */
     #[Test]
-    public function a_type_confused_provider_response_does_not_abort_the_command(): void
+    public function an_oversized_provider_response_is_truncated_to_the_column_width(): void
+    {
+        Http::fake(['*' => Http::response([
+            'countryCode' => str_repeat('X', 500),
+            'country' => str_repeat('Y', 5000),
+            'city' => str_repeat('Z', 5000),
+            'isp' => str_repeat('W', 5000),
+            'org' => str_repeat('V', 5000),
+        ])]);
+
+        $id = $this->seedIp('8.8.8.8');
+        Artisan::call('threat-detection:enrich', ['--days' => 7]);
+
+        $row = DB::table('threat_logs')->find($id);
+
+        // Positive control: something was stored, so the widths below are not
+        // being satisfied by nulls.
+        $this->assertNotNull($row->country_code);
+
+        $this->assertLessThanOrEqual(5, strlen((string) $row->country_code), 'country_code exceeds varchar(5)');
+        $this->assertLessThanOrEqual(100, strlen((string) $row->country_name), 'country_name exceeds varchar(100)');
+        $this->assertLessThanOrEqual(100, strlen((string) $row->city), 'city exceeds varchar(100)');
+        $this->assertLessThanOrEqual(255, strlen((string) $row->isp), 'isp exceeds varchar(255)');
+    }
+
+    /**
+     * A response whose fields are not strings at all — an array, an object, a
+     * number, a boolean.
+     *
+     * The command must complete rather than throw part-way through its loop.
+     * It reports failure, because a provider answering with arrays where
+     * strings were documented has resolved nothing — that is TD-013's contract
+     * and it is the right answer here. What must not happen is an uncaught
+     * error, or an array reaching the database.
+     */
+    #[Test]
+    public function a_type_confused_provider_response_is_discarded_rather_than_stored(): void
     {
         Http::fake(['*' => Http::response([
             'countryCode' => ['US', 'GB'],
@@ -135,11 +183,21 @@ class GeoEnrichmentTest extends TestCase
             'org' => null,
         ])]);
 
-        $this->seedIp('8.8.8.8');
+        $id = $this->seedIp('8.8.8.8');
 
+        // Completes; does not throw.
         $exit = Artisan::call('threat-detection:enrich', ['--days' => 7]);
+        $this->assertContains($exit, [0, 1]);
 
-        $this->assertSame(0, $exit, 'the command failed on a type-confused provider response');
+        $row = DB::table('threat_logs')->find($id);
+
+        // The array and object fields are dropped rather than coerced into
+        // something meaningless.
+        $this->assertNull($row->country_code);
+        $this->assertNull($row->country_name);
+
+        // A scalar the column can hold is kept, as a bounded string.
+        $this->assertSame('12345', $row->city);
     }
 
     /**
