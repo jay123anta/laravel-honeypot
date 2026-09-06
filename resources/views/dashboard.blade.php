@@ -6,7 +6,7 @@
     {{-- Stats Cards --}}
     <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
         <template x-for="card in [
-            { label: 'Total Threats', key: 'total_threats', color: 'text-white' },
+            { label: 'Detections', key: 'total_threats', color: 'text-white' },
             { label: 'High', key: 'high_severity', color: 'text-red-400' },
             { label: 'Medium', key: 'medium_severity', color: 'text-yellow-400' },
             { label: 'Low', key: 'low_severity', color: 'text-blue-400' },

@@ -42,7 +42,7 @@ class ThreatStatsCommand extends Command
         $this->table(
             ['Metric', 'Count'],
             [
-                ['Total Threats', (int) $row->total],
+                ['Recorded Detections', (int) $row->total],
                 ['High Severity', (int) $row->high],
                 ['Medium Severity', (int) $row->medium],
                 ['Low Severity', (int) $row->low],
@@ -51,6 +51,22 @@ class ThreatStatsCommand extends Command
                 ['Last Hour', (int) $row->last_hour],
             ]
         );
+
+        /*
+         * TD-010. These are rows, not attempts.
+         *
+         * A detection is written once per IP per threat type per five minutes;
+         * everything else inside that window is deduplicated and never reaches
+         * the table. That is deliberate — it is what stops a flood turning into
+         * a write per request — but it means twenty-five identical injections
+         * from one address appear here as one, and neither volume nor
+         * escalation can be read off these numbers.
+         *
+         * Said plainly at the point the number is presented, because "Total
+         * Threats" invited exactly the wrong reading.
+         */
+        $this->line('  Counts are recorded detections, deduplicated per IP per type per 5 minutes.');
+        $this->line('  Repeated attempts inside that window are not counted separately.');
 
         $topIps = DB::table($table)
             ->select('ip_address', DB::raw('COUNT(*) as count'))

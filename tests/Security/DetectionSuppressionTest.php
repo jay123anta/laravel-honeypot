@@ -2,6 +2,7 @@
 
 namespace JayAnta\ThreatDetection\Tests\Security;
 
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
@@ -206,21 +207,51 @@ class DetectionSuppressionTest extends TestCase
     }
 
     /**
-     * The consequence, stated as the question an operator actually asks. It
-     * cannot be answered from the table.
+     * TD-010, as the limitation it is rather than as a bug.
+     *
+     * Twenty-five identical injections from one address produce one row. That
+     * is dedup working: the window exists so a flood cannot turn into a write
+     * per request, which is the whole point of it during an attack.
+     *
+     * The consequence is that threat_logs records *that* an attack type
+     * occurred and never how often, so volume and escalation are not
+     * measurable from the table. Recording the count properly needs a schema
+     * change — see FIX_LOG.md, deferred — and incrementing a column per
+     * request would undo the protection dedup provides. What is fixed here is
+     * the presentation: the count is no longer offered as if it were a number
+     * of attempts.
      */
     #[Test]
-    public function the_log_records_how_many_times_an_attack_type_was_attempted(): void
+    public function repeated_attempts_of_one_type_collapse_to_a_single_row(): void
     {
         for ($i = 0; $i < 25; $i++) {
             $this->get('/s?q=' . urlencode(self::SQLI), ['User-Agent' => self::BROWSER]);
         }
 
         $this->assertSame(
-            25,
+            1,
             DB::table('threat_logs')->where('type', '[middleware] SQL Injection UNION')->count(),
-            'attempt volume is not recoverable from threat_logs'
+            'dedup is no longer collapsing repeats — if that is deliberate, the flood protection is gone'
         );
+    }
+
+    /**
+     * TD-010. The number an operator reads has to say what it counts. Asserted
+     * against the command's own output, because that is where the number is
+     * presented, not against a comment.
+     */
+    #[Test]
+    public function the_stats_output_says_that_repeats_are_deduplicated(): void
+    {
+        for ($i = 0; $i < 5; $i++) {
+            $this->get('/s?q=' . urlencode(self::SQLI), ['User-Agent' => self::BROWSER]);
+        }
+
+        Artisan::call('threat-detection:stats');
+        $output = Artisan::output();
+
+        $this->assertStringContainsString('Recorded Detections', $output);
+        $this->assertStringContainsString('deduplicated', $output);
     }
 
     // ── max_detections abuse ───────────────────────────────────────────────
