@@ -264,6 +264,12 @@ class CredentialExposureTest extends TestCase
     {
         return [
             'Password Exposure' => ['Password Exposure', 'password', 'Tr0ub4dor&3-correct'],
+            // Deliberately matches no vendor's key format. An earlier fixture
+            // here was shaped like a live Stripe key, and GitHub's push
+            // protection blocked the push on it — correctly, since a scanner
+            // cannot tell a fake prefix from a real one. The pattern under
+            // test only requires 20+ characters of [A-Za-z0-9-_] after the
+            // key name, so the prefix was never carrying any weight.
             'API Key Exposure' => ['API Key Exposure', 'api_key', 'example-api-key-0123456789-not-real'],
             'Access Token Leak' => ['Access Token Leak', 'access_token', 'ya29.aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789'],
             'Session ID Leak' => ['Session ID Leak', 'session_id', 'abcdef1234567890abcdefghij'],
