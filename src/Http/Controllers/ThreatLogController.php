@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Response;
 use JayAnta\ThreatDetection\Services\ExclusionRuleService;
 use JayAnta\ThreatDetection\Services\ThreatDetectionService;
+use Symfony\Component\HttpFoundation\Response as SymfonyResponse;
 
 class ThreatLogController extends Controller
 {
@@ -23,15 +24,43 @@ class ThreatLogController extends Controller
     private function safe(\Closure $callback): JsonResponse
     {
         try {
-            return $callback();
+            $response = $callback();
         } catch (\Throwable $e) {
             Log::error('Threat detection API error: ' . $e->getMessage());
 
-            return response()->json([
+            $response = response()->json([
                 'success' => false,
                 'message' => 'Database query failed. Has the threat_logs migration been run?',
             ], 500);
         }
+
+        $this->addSecurityHeaders($response);
+
+        return $response;
+    }
+
+    /**
+     * TD-004. Send the anti-sniffing header the dashboard route already sends.
+     *
+     * These responses carry attacker-controlled strings — URLs, types, user
+     * agents — and json_encode does not hex-escape '<' or '>'. A browser will
+     * not sniff application/json as HTML, so this is defence in depth rather
+     * than a live hole; it is sent because the package already decided these
+     * headers were worth sending on the other route, and an inconsistency in a
+     * security package gets noticed by an attacker before an operator.
+     *
+     * Only nosniff and Referrer-Policy: the dashboard's CSP and frame options
+     * describe a document, and applying them to a JSON API would say nothing
+     * useful.
+     *
+     * Mutates in place and returns nothing, so it can take a JsonResponse and
+     * a plain Response without either a union return type or a generic that
+     * promises more than Symfony's base class offers.
+     */
+    private function addSecurityHeaders(SymfonyResponse $response): void
+    {
+        $response->headers->set('X-Content-Type-Options', 'nosniff');
+        $response->headers->set('Referrer-Policy', 'no-referrer');
     }
 
     public function index(Request $request): JsonResponse
@@ -348,17 +377,28 @@ class ThreatLogController extends Controller
             $csvOutput = stream_get_contents($handle);
             fclose($handle);
 
-            return Response::make($csvOutput, 200, [
+            // TD-004. The CSV is defended by Content-Disposition: attachment,
+            // but nosniff costs nothing and closes the gap for a client that
+            // ignores it.
+            $csvResponse = Response::make($csvOutput, 200, [
                 'Content-Type' => 'text/csv',
                 'Content-Disposition' => "attachment; filename=\"$filename\"",
             ]);
+
+            $this->addSecurityHeaders($csvResponse);
+
+            return $csvResponse;
         } catch (\Throwable $e) {
             Log::error('Threat detection API error: ' . $e->getMessage());
 
-            return response()->json([
+            $errorResponse = response()->json([
                 'success' => false,
                 'message' => 'Database query failed. Has the threat_logs migration been run?',
             ], 500);
+
+            $this->addSecurityHeaders($errorResponse);
+
+            return $errorResponse;
         }
     }
 
@@ -529,7 +569,22 @@ class ThreatLogController extends Controller
             return '';
         }
 
-        if (preg_match('/^[=+\-@\t\r]/', $value)) {
+        /*
+         * TD-003. The formula character does not have to be the first
+         * character — only the first *meaningful* one.
+         *
+         * This tested /^[=+\-@\t\r]/, which anchors on position zero, so
+         * " =1+1" and "\n=1+1" passed through unescaped. fputcsv keeps both
+         * inside one quoted field, and whether the spreadsheet then evaluates
+         * them depends on the importer: Excel treats a leading space as text,
+         * LibreOffice's import dialog has a trim-spaces option that does not.
+         *
+         * Leading whitespace is now skipped before looking for the formula
+         * character. The bare \t and \r case is kept as its own alternative:
+         * a cell that begins with a control character is worth escaping
+         * whatever follows it.
+         */
+        if (preg_match('/^\s*[=+\-@]/', $value) || preg_match('/^[\t\r]/', $value)) {
             return "'" . $value;
         }
 
