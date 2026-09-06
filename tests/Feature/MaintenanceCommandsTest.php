@@ -276,17 +276,27 @@ class MaintenanceCommandsTest extends TestCase
         );
     }
 
+    /**
+     * A provider error leaves the row unenriched and lets the run finish —
+     * that part is unchanged, the loop does not abort part-way.
+     *
+     * What changed with TD-013 is the exit code. This previously asserted 0,
+     * encoding a deliberate "geo lookup is best-effort" decision. Best-effort
+     * is right for one address among many; reporting success when *every*
+     * lookup failed is the silent-success pattern this package has been bitten
+     * by twice, and it matters more now that the HTTPS default is itself a
+     * likely cause of total failure. Partial failure still exits 0 — see
+     * GeoEnrichmentTest::a_partial_failure_still_reports_success().
+     */
     #[Test]
-    public function enrich_tolerates_a_provider_error_without_failing(): void
+    public function enrich_reports_failure_when_the_provider_errors_on_every_address(): void
     {
         Http::fake(['*' => Http::response('upstream down', 500)]);
 
         $id = $this->seedThreat(['ip_address' => '8.8.8.8']);
 
-        $this->artisan('threat-detection:enrich', ['--days' => 7])->assertExitCode(0);
+        $this->artisan('threat-detection:enrich', ['--days' => 7])->assertExitCode(1);
 
-        // Geo lookup is best-effort; a failed one leaves the row unenriched
-        // rather than aborting the run.
         $this->assertNull(DB::table('threat_logs')->find($id)->country_code);
     }
 }

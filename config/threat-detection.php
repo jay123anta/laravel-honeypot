@@ -690,12 +690,22 @@ return [
     | nothing leaves your server unless you run it.
     |
     | Be aware of two things when you do. The attacking IP addresses being
-    | looked up are disclosed to a third party, and the default endpoint is
-    | cleartext HTTP, so an on-path observer can read those addresses and forge
-    | the replies. The default is HTTP because ip-api.com's free tier answers
-    | 403 over HTTPS; defaulting to https:// would break enrichment for every
-    | free-tier user, and silently, since a failed lookup is treated as
-    | best-effort.
+    | looked up are disclosed to a third party, so the default endpoint is
+    | HTTPS: over cleartext an on-path observer could read those addresses and
+    | forge the replies, and the reply is written into your database and shown
+    | on the dashboard.
+    |
+    | ip-api.com's free tier answers 403 over HTTPS, so enrichment will fail
+    | there. It now fails *loudly* — the command reports how many lookups
+    | succeeded and exits non-zero when none did — rather than printing
+    | "Enrichment complete!" having enriched nothing. There is no fallback to
+    | cleartext on failure: an attacker who can block the HTTPS request would
+    | otherwise get the plaintext one for free.
+    |
+    | If you are on the free tier and accept the disclosure, set the endpoint
+    | back explicitly:
+    |
+    |   THREAT_DETECTION_GEO_ENDPOINT=http://ip-api.com/json
     |
     | If you hold an ip-api key, or use another provider returning the same
     | field names (countryCode, country, city, isp, org), point this at it:
@@ -704,7 +714,7 @@ return [
     |
     */
     'enrichment' => [
-        'endpoint' => env('THREAT_DETECTION_GEO_ENDPOINT', 'http://ip-api.com/json'),
+        'endpoint' => env('THREAT_DETECTION_GEO_ENDPOINT', 'https://ip-api.com/json'),
     ],
 
     /*

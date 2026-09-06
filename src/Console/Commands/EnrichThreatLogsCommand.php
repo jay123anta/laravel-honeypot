@@ -48,23 +48,27 @@ class EnrichThreatLogsCommand extends Command
     /**
      * Geo provider base URL.
      *
-     * The default is cleartext HTTP because ip-api.com's free tier answers 403
-     * over HTTPS — switching the default to https:// would break enrichment for
-     * every free-tier user, and silently, since a failed lookup is swallowed as
-     * best-effort. Two things follow that operators should know: the attacking
-     * IPs you look up are disclosed to a third party, and they travel
-     * unencrypted, so an on-path observer can read them and forge the answers.
+     * TD-013. The default is HTTPS. Over cleartext, the attacking IPs looked up
+     * here are readable by anyone on the path, and — worse — the reply is
+     * theirs to forge, and it is written into the database and shown on the
+     * dashboard.
      *
-     * Set THREAT_DETECTION_GEO_ENDPOINT to the HTTPS endpoint if you hold an
-     * ip-api key, or to any other provider returning the same field names.
-     * Enrichment is opt-in either way: nothing is sent unless you run this
-     * command.
+     * ip-api.com's free tier answers 403 over TLS, so this default breaks
+     * enrichment there. It breaks it *loudly*: handle() reports how many
+     * lookups resolved and exits non-zero when none did, rather than printing
+     * "Enrichment complete!" having enriched nothing. There is deliberately no
+     * fallback to cleartext, since an attacker able to block the HTTPS request
+     * would otherwise be handed the plaintext one.
+     *
+     * Free-tier users who accept the disclosure can set
+     * THREAT_DETECTION_GEO_ENDPOINT back to http://ip-api.com/json. Enrichment
+     * is opt-in either way: nothing is sent unless this command is run.
      */
     protected function endpoint(): string
     {
         return (string) config(
             'threat-detection.enrichment.endpoint',
-            'http://ip-api.com/json'
+            'https://ip-api.com/json'
         );
     }
 
@@ -111,8 +115,22 @@ class EnrichThreatLogsCommand extends Command
 
         $bar = $this->output->createProgressBar($ips->count());
 
+        $enriched = 0;
+        $attempted = 0;
+
         foreach ($ips as $ip) {
+            if ($this->isLookupCandidate($ip)) {
+                $attempted++;
+            }
+
             $data = $this->enrichIp($ip);
+
+            // A lookup that resolved nothing leaves country_code null. Counting
+            // that separately is what lets a total failure be reported instead
+            // of announced as success.
+            if (($data['country_code'] ?? null) !== null) {
+                $enriched++;
+            }
 
             DB::table($table)
                 ->where('ip_address', $ip)
@@ -125,7 +143,33 @@ class EnrichThreatLogsCommand extends Command
 
         $bar->finish();
         $this->newLine();
-        $this->info('Enrichment complete!');
+
+        /*
+         * TD-013. A geo lookup is best-effort and its failure is swallowed, so
+         * without this the command printed "Enrichment complete!" having
+         * enriched nothing — the same silent success the missing-guzzle bug
+         * produced in v1.7.2.
+         *
+         * It matters more now that the endpoint defaults to HTTPS:
+         * ip-api.com's free tier answers 403 over TLS, so the most likely
+         * reason for a total failure is exactly the change that made the
+         * transport safe, and the operator needs to be told which trade they
+         * are looking at rather than left with an empty dashboard.
+         */
+        if ($attempted > 0 && $enriched === 0) {
+            $this->error("Enrichment failed: 0 of {$attempted} addresses were resolved.");
+            $this->line('  Provider: ' . $endpoint);
+            $this->line('  Every lookup failed. Common causes:');
+            $this->line('   - ip-api.com answers 403 over HTTPS on the free tier.');
+            $this->line('     Set THREAT_DETECTION_GEO_ENDPOINT to a provider that supports TLS,');
+            $this->line('     or accept the disclosure and set it to http://ip-api.com/json.');
+            $this->line('   - the provider is unreachable, or the rate limit is exhausted.');
+
+            return 1;
+        }
+
+        $this->info("Enrichment complete! {$enriched} of {$attempted} addresses resolved"
+            . ($attempted < $ips->count() ? ' (' . ($ips->count() - $attempted) . ' private or malformed, skipped).' : '.'));
 
         return 0;
     }
@@ -155,17 +199,28 @@ class EnrichThreatLogsCommand extends Command
         });
     }
 
+    /**
+     * Whether this address is worth asking the provider about.
+     *
+     * A malformed value would be an SSRF primitive in the request URL; a
+     * private or reserved one cannot be resolved and would spend a
+     * rate-limited request to learn nothing.
+     *
+     * Shared with handle() so the run can tell a *skipped* address from an
+     * *attempted and failed* one. Counting a deliberately skipped private
+     * address as a failure would report an error on a healthy install whose
+     * only traffic came from the local network.
+     */
+    protected function isLookupCandidate(string $ip): bool
+    {
+        return filter_var($ip, FILTER_VALIDATE_IP) !== false
+            && filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false;
+    }
+
     protected function fetchGeoData(string $ip): array
     {
         try {
-            // Validate IP format to prevent SSRF via crafted values
-            if (!filter_var($ip, FILTER_VALIDATE_IP)) {
-                return [];
-            }
-
-            // Skip private/reserved ranges — the geo API can't resolve them and
-            // there's no point spending a rate-limited request (or flagging them).
-            if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+            if (!$this->isLookupCandidate($ip)) {
                 return [];
             }
 

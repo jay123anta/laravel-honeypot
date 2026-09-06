@@ -2,6 +2,7 @@
 
 namespace JayAnta\ThreatDetection\Tests\Security;
 
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -191,22 +192,127 @@ class GeoEnrichmentTest extends TestCase
         );
     }
 
-    /** The mitigation that is present: the operator is told, before it happens. */
+    /**
+     * TD-013. Failing over to cleartext when TLS fails would defeat the point
+     * of defaulting to TLS — an on-path attacker who blocks the HTTPS request
+     * would get the plaintext one for free.
+     */
     #[Test]
-    public function the_command_warns_that_addresses_leave_over_cleartext(): void
+    public function a_failed_https_lookup_never_retries_over_cleartext(): void
+    {
+        Http::fake(['*' => Http::response('forbidden', 403)]);
+
+        $this->seedIp('8.8.8.8');
+        Artisan::call('threat-detection:enrich', ['--days' => 7]);
+
+        Http::assertNotSent(fn ($request) => str_starts_with($request->url(), 'http://'));
+    }
+
+    #[Test]
+    public function a_tls_connection_failure_never_retries_over_cleartext(): void
+    {
+        Http::fake(fn () => throw new ConnectionException('SSL certificate problem'));
+
+        $this->seedIp('8.8.8.8');
+        Artisan::call('threat-detection:enrich', ['--days' => 7]);
+
+        Http::assertNotSent(fn ($request) => str_starts_with($request->url(), 'http://'));
+    }
+
+    /**
+     * TD-013. Defaulting to HTTPS breaks ip-api.com's free tier, which answers
+     * 403 over TLS. That is an acceptable trade only if the operator is told:
+     * a lookup failure is swallowed as best-effort, so without this the command
+     * prints "Enrichment complete!" having enriched nothing — the same silent
+     * success that the missing-guzzle bug produced in v1.7.2.
+     */
+    #[Test]
+    public function the_command_fails_when_every_lookup_failed(): void
+    {
+        Http::fake(['*' => Http::response('forbidden', 403)]);
+
+        $this->seedIp('8.8.8.8');
+        $this->seedIp('1.1.1.1');
+
+        $exit = Artisan::call('threat-detection:enrich', ['--days' => 7]);
+        $output = Artisan::output();
+
+        $this->assertSame(1, $exit, 'the command reported success having enriched nothing');
+        $this->assertStringNotContainsString('Enrichment complete!', $output);
+        $this->assertStringContainsString('0 of 2', $output);
+    }
+
+    /**
+     * The positive control for the two tests above: a working provider still
+     * enriches and still exits 0. Without this, "the command fails" could be
+     * satisfied by a command that always fails.
+     */
+    #[Test]
+    public function a_working_provider_still_enriches_and_reports_success(): void
+    {
+        Http::fake(['*' => Http::response([
+            'countryCode' => 'US', 'country' => 'United States',
+            'city' => 'Ashburn', 'isp' => 'Amazon', 'org' => 'AWS EC2',
+        ])]);
+
+        $id = $this->seedIp('8.8.8.8');
+
+        $exit = Artisan::call('threat-detection:enrich', ['--days' => 7]);
+        $output = Artisan::output();
+
+        $this->assertSame(0, $exit);
+        $this->assertStringContainsString('Enrichment complete!', $output);
+        $this->assertSame('US', DB::table('threat_logs')->find($id)->country_code);
+    }
+
+    /** A partial failure is still a success — some rows were enriched. */
+    #[Test]
+    public function a_partial_failure_still_reports_success(): void
+    {
+        Http::fake([
+            '*/8.8.8.8*' => Http::response(['countryCode' => 'US', 'country' => 'United States']),
+            '*' => Http::response('forbidden', 403),
+        ]);
+
+        $this->seedIp('8.8.8.8');
+        $this->seedIp('1.1.1.1');
+
+        $this->assertSame(0, Artisan::call('threat-detection:enrich', ['--days' => 7]));
+    }
+
+    /**
+     * The operator is told which third party is about to receive the addresses,
+     * before any of them are sent. With the HTTPS default there is no cleartext
+     * warning to print — and the absence of that line is asserted, so a
+     * regression to an http:// default fails here as well as in the test above.
+     */
+    #[Test]
+    public function the_command_names_the_provider_before_sending_anything(): void
     {
         Http::fake(['*' => Http::response(['countryCode' => 'US'])]);
         $this->seedIp('8.8.8.8');
 
         // Artisan::call rather than the PendingCommand, so the whole output is
-        // one string — both phrases live on the same line, and
-        // expectsOutputToContain matches them against separate lines.
+        // one string — expectsOutputToContain matches line by line.
         $this->assertSame(0, Artisan::call('threat-detection:enrich', ['--days' => 7]));
 
         $output = Artisan::output();
 
-        $this->assertStringContainsString('Provider: http://ip-api.com/json', $output);
+        $this->assertStringContainsString('Provider: https://ip-api.com/json', $output);
         $this->assertStringContainsString('sent to this third party', $output);
-        $this->assertStringContainsString('cleartext HTTP', $output);
+        $this->assertStringNotContainsString('cleartext HTTP', $output);
+    }
+
+    /** ...and the warning does appear if an operator opts back down to http. */
+    #[Test]
+    public function the_command_warns_when_an_operator_configures_a_cleartext_endpoint(): void
+    {
+        config(['threat-detection.enrichment.endpoint' => 'http://ip-api.com/json']);
+        Http::fake(['*' => Http::response(['countryCode' => 'US'])]);
+        $this->seedIp('8.8.8.8');
+
+        Artisan::call('threat-detection:enrich', ['--days' => 7]);
+
+        $this->assertStringContainsString('cleartext HTTP', Artisan::output());
     }
 }
