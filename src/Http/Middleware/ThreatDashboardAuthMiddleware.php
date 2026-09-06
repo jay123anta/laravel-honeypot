@@ -3,9 +3,11 @@
 namespace JayAnta\ThreatDetection\Http\Middleware;
 
 use Closure;
+use Illuminate\Cookie\CookieValuePrefix;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpFoundation\IpUtils;
 
@@ -30,6 +32,22 @@ class ThreatDashboardAuthMiddleware
         $isWrite = $mode === 'write';
         $key = $isWrite ? 'write_guard' : 'guard';
         $envVar = 'THREAT_DETECTION_' . strtoupper($context) . ($isWrite ? '_WRITE_GUARD' : '_GUARD');
+
+        // TD-008. A write here disables a detection for everyone, permanently,
+        // and leaves nothing behind that looks like an attack. The write routes
+        // sit in Laravel's `api` group, which is stateless by design and
+        // carries no VerifyCsrfToken — correct for token authentication, wrong
+        // the moment the endpoints are reached with cookies, which is what the
+        // Sanctum-absent fallback produces.
+        //
+        // Checked before the guard so a forged request is refused before any
+        // authorization work happens, and only for requests that actually
+        // carry a session: a bearer token is not attached by a browser to a
+        // cross-site request, so demanding a CSRF token from stateless callers
+        // would break every legitimate API client and protect no one.
+        if ($isWrite) {
+            $this->verifyCsrfForCookieAuthenticatedWrite($request);
+        }
 
         $guard = config("threat-detection.{$context}.{$key}", $isWrite ? 'role' : 'none');
 
@@ -94,5 +112,71 @@ class ThreatDashboardAuthMiddleware
         Log::warning("Threat detection {$context} " . ($isWrite ? 'write_guard' : 'guard')
             . " '{$guard}' is not recognised (expected none|auth|role|ip). Denying access.");
         abort(403, 'Unauthorized');
+    }
+
+    /**
+     * Reject a state-changing request that carries a session but no matching
+     * CSRF token.
+     *
+     * Laravel's own VerifyCsrfToken is not delegated to here for two reasons:
+     * it short-circuits whenever the application is running unit tests, which
+     * would make every test of this behaviour vacuous; and the application's
+     * subclass carries an $except list that has nothing to do with these
+     * routes.
+     *
+     * Three token sources are accepted, matching what VerifyCsrfToken itself
+     * reads: the _token form field, the X-CSRF-TOKEN header that the shipped
+     * dashboard sends, and the encrypted X-XSRF-TOKEN header that axios-based
+     * clients send from the cookie of the same name. Missing the third would
+     * break an SPA that works today.
+     */
+    private function verifyCsrfForCookieAuthenticatedWrite(Request $request): void
+    {
+        // No session means no cookie a third-party page could ride on.
+        if (!$request->hasSession() || !$request->session()->isStarted()) {
+            return;
+        }
+
+        if (in_array($request->getMethod(), ['GET', 'HEAD', 'OPTIONS'], true)) {
+            return;
+        }
+
+        $expected = (string) $request->session()->token();
+
+        // A session with no token cannot be verified, so it is refused rather
+        // than waved through.
+        if ($expected === '' || !hash_equals($expected, (string) $this->csrfTokenFrom($request))) {
+            abort(419, 'CSRF token mismatch.');
+        }
+    }
+
+    private function csrfTokenFrom(Request $request): string
+    {
+        $token = $request->input('_token') ?: $request->header('X-CSRF-TOKEN');
+
+        if (is_string($token) && $token !== '') {
+            return $token;
+        }
+
+        $encrypted = $request->header('X-XSRF-TOKEN');
+
+        if (!is_string($encrypted) || $encrypted === '') {
+            return '';
+        }
+
+        try {
+            $decrypted = Crypt::decrypt($encrypted, false);
+        } catch (\Throwable $e) {
+            return '';
+        }
+
+        // Laravel prefixes cookie values with an HMAC of the cookie name.
+        // Referenced as a string so Pint's import fixer cannot hoist an
+        // optional class into a use statement.
+        if (class_exists('Illuminate\Cookie\CookieValuePrefix')) {
+            $decrypted = CookieValuePrefix::remove($decrypted);
+        }
+
+        return (string) $decrypted;
     }
 }

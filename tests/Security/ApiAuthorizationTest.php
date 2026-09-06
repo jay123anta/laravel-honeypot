@@ -5,7 +5,6 @@ namespace JayAnta\ThreatDetection\Tests\Security;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
 use JayAnta\ThreatDetection\Tests\TestCase;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -194,55 +193,14 @@ class ApiAuthorizationTest extends TestCase
         $this->json($method, $uri)->assertStatus(403);
     }
 
-    /**
-     * TD-008 — the write endpoints have no CSRF protection.
-     *
-     * They are registered in the `api` middleware group, which in Laravel is
-     * stateless by design and carries no VerifyCsrfToken. That is correct for
-     * a token-authenticated API. It stops being correct the moment the
-     * endpoints are reached with *cookie* authentication — which is exactly
-     * what the shipped dashboard does (fetch with credentials: 'same-origin')
-     * and what the Sanctum-absent fallback produces, since it substitutes the
-     * session-based `auth` middleware.
-     *
-     * So an administrator holding the write role, who visits a hostile page
-     * while logged in, can be made to mark a threat as a false positive —
-     * which creates an exclusion rule and disables that detection for
-     * everyone, permanently and silently.
-     *
-     * The dashboard sends an X-CSRF-TOKEN header, so the protection was
-     * intended; nothing on the server requires it.
-     *
-     * This asserts that a cookie-authenticated write without a CSRF token is
-     * rejected. It fails.
+    /*
+     * TD-008 lives in CsrfOnWriteEndpointsTest. It was here first, driven
+     * with Auth::login() inside the plain `api` group — which authenticates
+     * without a session at all, so it demonstrated the missing middleware
+     * but not the attack, and no session-aware fix could have made it pass.
+     * Moved rather than kept, so there is one place that tests it and that
+     * place uses real sessions.
      */
-    #[Test]
-    public function a_cookie_authenticated_write_without_a_csrf_token_is_rejected(): void
-    {
-        DB::table('threat_logs')->insert([
-            'ip_address' => '203.0.113.9', 'url' => 'https://example.com/x', 'user_agent' => 'UA',
-            'type' => '[middleware] XSS Script Tag', 'payload' => 'x', 'threat_level' => 'high',
-            'confidence_score' => 90, 'confidence_label' => 'very_high', 'action_taken' => 'logged',
-            'created_at' => now(), 'updated_at' => now(),
-        ]);
-
-        // An administrator with every privilege the package recognises, whose
-        // browser is making the request because a hostile page told it to.
-        Auth::login(new ApiUser(['admin']));
-
-        $response = $this->post(
-            '/api/threat-detection/threats/1/false-positive',
-            [],
-            ['Origin' => 'https://evil.example', 'Referer' => 'https://evil.example/page']
-        );
-
-        $this->assertGreaterThanOrEqual(
-            400,
-            $response->getStatusCode(),
-            'a cross-origin, tokenless write disabled a detection'
-        );
-        $this->assertDatabaseMissing('threat_exclusion_rules', ['created_from_threat_id' => 1]);
-    }
 
     // ── guard 'none' is the shipped default, and it is not "open" ──────────
 
