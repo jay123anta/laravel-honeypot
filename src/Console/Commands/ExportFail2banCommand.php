@@ -5,6 +5,7 @@ namespace JayAnta\ThreatDetection\Console\Commands;
 use Illuminate\Console\Command;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class ExportFail2banCommand extends Command
 {
@@ -19,7 +20,7 @@ class ExportFail2banCommand extends Command
 
     public function handle(): int
     {
-        $ips = $this->getBlockableIps();
+        $ips = $this->withValidAddresses($this->getBlockableIps());
 
         if ($ips->isEmpty()) {
             $this->info('No IPs match the given filters.');
@@ -59,6 +60,36 @@ class ExportFail2banCommand extends Command
         }
 
         return $query->get();
+    }
+
+    /**
+     * TD-005. Drop any row whose ip_address is not an address, immediately
+     * before it is written into generated output.
+     *
+     * This command emits a #!/bin/bash script that an operator runs as root, so
+     * a newline in this column becomes a new command and a $(...) becomes a
+     * substitution at run time. Today the column is only ever written from
+     * $request->ip(), which Symfony validates — but that is a guarantee made in
+     * a dependency, for one write path, and this file is the last place the
+     * value can be checked before it leaves as a shell script.
+     *
+     * Skipping is announced, so a blocklist that loses entries says so.
+     */
+    private function withValidAddresses($ips)
+    {
+        return $ips->filter(function ($row) {
+            if (filter_var((string) $row->ip_address, FILTER_VALIDATE_IP) !== false) {
+                return true;
+            }
+
+            Log::warning(
+                'Threat detection: skipping a fail2ban row whose ip_address is not a valid IP. '
+                . 'It was not written to the generated output. Value: '
+                . var_export($row->ip_address, true)
+            );
+
+            return false;
+        })->values();
     }
 
     private function parseSince(string $since): Carbon

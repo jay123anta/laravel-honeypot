@@ -5,6 +5,7 @@ namespace JayAnta\ThreatDetection\Console\Commands;
 use Illuminate\Console\Command;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class ExportBlocklistCommand extends Command
 {
@@ -18,7 +19,7 @@ class ExportBlocklistCommand extends Command
 
     public function handle(): int
     {
-        $ips = $this->getBlockableIps();
+        $ips = $this->withValidAddresses($this->getBlockableIps());
 
         if ($ips->isEmpty()) {
             $this->info('No IPs match the given filters.');
@@ -71,6 +72,42 @@ class ExportBlocklistCommand extends Command
 
             return $row;
         });
+    }
+
+    /**
+     * TD-005. Drop any row whose ip_address is not an address, immediately
+     * before it is written into generated output.
+     *
+     * These formats are consumed by nginx, apache and a root-run shell script,
+     * and the value is interpolated into each line unescaped — so a newline in
+     * this column becomes a new config directive or a new command. Today the
+     * column is only ever written from $request->ip(), which Symfony validates,
+     * but that is a guarantee made in a dependency for one write path. The
+     * event listeners, seeders and direct inserts that also write here make no
+     * such promise, and this file is the last place the value can be checked
+     * before it leaves as configuration.
+     *
+     * Checked here rather than at the point of entry so that every producer,
+     * present and future, is covered by one guard.
+     *
+     * Skipping is announced: a blocklist that silently loses entries is its own
+     * kind of failure.
+     */
+    private function withValidAddresses($ips)
+    {
+        return $ips->filter(function ($row) {
+            if (filter_var((string) $row->ip_address, FILTER_VALIDATE_IP) !== false) {
+                return true;
+            }
+
+            Log::warning(
+                'Threat detection: skipping a blocklist row whose ip_address is not a valid IP. '
+                . 'It was not written to the generated output. Value: '
+                . var_export($row->ip_address, true)
+            );
+
+            return false;
+        })->values();
     }
 
     private function parseSince(string $since): Carbon

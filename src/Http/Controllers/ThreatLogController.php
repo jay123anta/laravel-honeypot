@@ -320,7 +320,12 @@ class ThreatLogController extends Controller
                 return [
                     $log->id,
                     $this->sanitizeCsvCell($log->created_at),
-                    $this->sanitizeCsvCell($log->ip_address),
+                    // TD-005. The IP column is the one field a downstream tool
+                    // is likely to feed straight into a firewall rule, so it
+                    // leaves here as an address or not at all. fputcsv already
+                    // stops a newline splitting the record; this stops the cell
+                    // carrying something that was never an address.
+                    $this->sanitizeIpCell($log->ip_address),
                     $this->sanitizeCsvCell($log->url),
                     $this->sanitizeCsvCell($log->type),
                     $log->threat_level,
@@ -495,6 +500,29 @@ class ThreatLogController extends Controller
      * Sanitize a CSV cell to prevent formula injection in spreadsheet applications.
      * Prefixes cells starting with =, +, -, @, \t, \r with a single quote.
      */
+    /**
+     * TD-005. An ip_address cell that is not an address is replaced rather
+     * than escaped.
+     *
+     * Escaping would keep the value readable while leaving it able to be
+     * copied into a firewall rule by whatever reads the export. Replacing it
+     * keeps the row — the URL, the type and the timestamp are still evidence —
+     * while making the bad value obvious to the analyst.
+     */
+    private function sanitizeIpCell(?string $value): string
+    {
+        if ($value !== null && filter_var($value, FILTER_VALIDATE_IP) !== false) {
+            return $value;
+        }
+
+        Log::warning(
+            'Threat detection: a threat_logs row has an ip_address that is not a valid IP; '
+            . 'it was replaced in the CSV export. Value: ' . var_export($value, true)
+        );
+
+        return '[INVALID IP]';
+    }
+
     private function sanitizeCsvCell(?string $value): string
     {
         if ($value === null) {
